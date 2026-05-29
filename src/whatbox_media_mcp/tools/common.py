@@ -22,7 +22,8 @@ async def partial_call(call: Callable[[], Awaitable[T]]) -> tuple[T | None, str 
     try:
         return await call(), None
     except MediaMcpError as exc:
-        return None, exc.message
+        detail = exc.details.get("detail") if exc.details else None
+        return None, f"{exc.message} ({detail})" if detail else exc.message
 
 
 def clamp_limit(limit: int, default: int = 100, maximum: int = 500) -> int:

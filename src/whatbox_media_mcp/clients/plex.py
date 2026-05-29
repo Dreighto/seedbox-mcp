@@ -29,7 +29,7 @@ class PlexClient:
             raise UpstreamError(
                 "upstream_unreachable",
                 "Plex is unreachable or rejected credentials.",
-                {"reason": exc.__class__.__name__},
+                {"reason": exc.__class__.__name__, "detail": str(exc)},
             ) from exc
 
     async def get_sections(self) -> list[str]:

@@ -1,5 +1,8 @@
 set shell := ["zsh", "-cu"]
 
+list:
+    just --list
+
 setup:
     uv sync
 
@@ -8,6 +11,9 @@ run:
 
 test:
     uv run pytest
+
+test-live:
+    LIVE_TESTS=1 uv run pytest -m live -v
 
 lint:
     uv run ruff check .
