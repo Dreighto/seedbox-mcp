@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import requests
+import urllib3
 from plexapi.server import PlexServer
 
 from whatbox_media_mcp.errors import UpstreamError
@@ -22,9 +24,15 @@ class PlexClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
 
+    def _session(self) -> requests.Session:
+        session = requests.Session()
+        session.verify = False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return session
+
     def _server(self) -> PlexServer:
         try:
-            return PlexServer(self.base_url, self.token)  # type: ignore[no-untyped-call]
+            return PlexServer(self.base_url, self.token, session=self._session())  # type: ignore[no-untyped-call]
         except Exception as exc:  # plexapi raises several connection/auth exceptions.
             raise UpstreamError(
                 "upstream_unreachable",
