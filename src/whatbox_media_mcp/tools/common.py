@@ -55,6 +55,7 @@ def compact_queue_item(source: str, item: dict[str, Any]) -> dict[str, Any]:
     if isinstance(progress, (int, float)) and isinstance(total, (int, float)) and total:
         progress_percent = round(max(0.0, min(100.0, 100 - (progress / total * 100))), 1)
     return {
+        "queue_id": item.get("id"),
         "source": source,
         "title": pick_title(item),
         "status": item.get("status") or "unknown",

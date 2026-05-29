@@ -17,6 +17,7 @@ from whatbox_media_mcp.tools.radarr import (
     radarr_add_movie,
     radarr_delete_movie,
     radarr_overview,
+    radarr_queue_action,
     radarr_research_movie,
 )
 from whatbox_media_mcp.tools.search import media_search
@@ -24,6 +25,7 @@ from whatbox_media_mcp.tools.sonarr import (
     sonarr_add_series,
     sonarr_delete_series,
     sonarr_overview,
+    sonarr_queue_action,
     sonarr_research_series,
 )
 from whatbox_media_mcp.tools.staleness import staleness_report
@@ -187,6 +189,20 @@ def create_mcp(services: Services) -> FastMCP:
     ) -> dict[str, Any]:
         return await sonarr_research_series(services, sonarr_id, mode, confirm)
 
+    async def radarr_queue_action_tool(
+        queue_id: int,
+        action: str,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        return await radarr_queue_action(services, queue_id, action, confirm)
+
+    async def sonarr_queue_action_tool(
+        queue_id: int,
+        action: str,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        return await sonarr_queue_action(services, queue_id, action, confirm)
+
     async def radarr_delete_movie_tool(
         radarr_id: int,
         delete_files: bool = False,
@@ -232,6 +248,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "sonarr_research_series", WRITE, sonarr_research_series_tool)
     register_tool(mcp, "radarr_delete_movie", DESTRUCTIVE, radarr_delete_movie_tool)
     register_tool(mcp, "sonarr_delete_series", DESTRUCTIVE, sonarr_delete_series_tool)
+    register_tool(mcp, "radarr_queue_action", WRITE, radarr_queue_action_tool)
+    register_tool(mcp, "sonarr_queue_action", WRITE, sonarr_queue_action_tool)
     register_tool(mcp, "staleness_report", READ_ONLY, staleness_report_tool)
     return mcp
 

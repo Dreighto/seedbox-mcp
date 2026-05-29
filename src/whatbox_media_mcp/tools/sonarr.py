@@ -10,8 +10,11 @@ from whatbox_media_mcp.tools.common import (
     clamp_limit,
     compact_queue_item,
     compact_series,
+    pick_title,
     safe_tool,
 )
+
+SONARR_QUEUE_ACTIONS = {"remove", "blocklist"}
 
 SONARR_RESEARCH_COMMANDS = {
     "series_search": "SeriesSearch",
@@ -45,9 +48,7 @@ async def sonarr_overview(
             else:
                 raw_series = await services.sonarr.get("/api/v3/series")
                 series_titles = {
-                    item["id"]: item["title"]
-                    for item in _as_list(raw_series)
-                    if "id" in item and "title" in item
+                    item["id"]: item["title"] for item in _as_list(raw_series) if "id" in item and "title" in item
                 }
             data["missing"] = [
                 {
@@ -176,6 +177,42 @@ async def sonarr_research_series(
             return ToolResponse.success({"dry_run": True, "would_run": preview})
         command = await services.sonarr.post("/api/v3/command", payload)
         return ToolResponse.success({"dry_run": False, "command": command})
+
+    return await safe_tool(run)
+
+
+async def sonarr_queue_action(
+    services: Services,
+    queue_id: int,
+    action: str,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not queue_id:
+            raise MediaMcpError("validation", "sonarr_queue_action requires queue_id.")
+        if action not in SONARR_QUEUE_ACTIONS:
+            raise MediaMcpError("validation", "Unsupported action.", {"allowed": sorted(SONARR_QUEUE_ACTIONS)})
+        queue = await services.sonarr.get("/api/v3/queue", {"page": 1, "pageSize": 250})
+        item = next((i for i in _records(queue) if i.get("id") == queue_id), None)
+        if not item:
+            raise MediaMcpError("not_found", "Queue item not found.", {"queue_id": queue_id})
+        blocklist = action == "blocklist"
+        preview = {
+            "queue_id": queue_id,
+            "title": pick_title(item),
+            "status": item.get("status"),
+            "tracked_download_state": item.get("trackedDownloadState") or item.get("trackedDownloadStatus"),
+            "action": action,
+            "remove_from_client": False,
+            "blocklist": blocklist,
+        }
+        if not confirm:
+            return ToolResponse.success({"dry_run": True, "would_action": preview})
+        await services.sonarr.delete(
+            f"/api/v3/queue/{queue_id}",
+            bool_params({"removeFromClient": False, "blocklist": blocklist}),
+        )
+        return ToolResponse.success({"dry_run": False, "actioned": preview})
 
     return await safe_tool(run)
 

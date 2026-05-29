@@ -43,7 +43,9 @@ async def staleness_report(
             data["added_long_ago_unwatched"] = [
                 item
                 for item in plex_items
-                if not item.get("view_count") and not item.get("last_viewed_at") and _before(item.get("added_at"), cutoff)
+                if not item.get("view_count")
+                and not item.get("last_viewed_at")
+                and _before(item.get("added_at"), cutoff)
             ][:bounded]
             data["watched_long_ago"] = [
                 item

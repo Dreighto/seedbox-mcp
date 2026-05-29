@@ -125,7 +125,11 @@ def services(settings: Settings) -> Services:
                 "path": "/media/Movies/Heat",
                 "monitored": True,
             },
-            ("GET", "/api/v3/queue"): {"records": []},
+            ("GET", "/api/v3/queue"): {
+                "records": [
+                    {"id": 10, "title": "Heat (1995)", "status": "completed", "trackedDownloadState": "importBlocked"},
+                ]
+            },
             ("GET", "/api/v3/wanted/missing"): {"records": []},
         }
     )
@@ -152,7 +156,16 @@ def services(settings: Settings) -> Services:
                 "path": "/media/TV/The Wire",
                 "monitored": True,
             },
-            ("GET", "/api/v3/queue"): {"records": []},
+            ("GET", "/api/v3/queue"): {
+                "records": [
+                    {
+                        "id": 20,
+                        "title": "The Wire S01E01",
+                        "status": "completed",
+                        "trackedDownloadState": "importBlocked",
+                    },
+                ]
+            },
             ("GET", "/api/v3/wanted/missing"): {"records": []},
         }
     )

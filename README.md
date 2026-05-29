@@ -84,11 +84,13 @@ Write tools:
 - `radarr_add_movie`
 - `radarr_research_movie`
 - `radarr_delete_movie`
+- `radarr_queue_action`
 - `sonarr_add_series`
 - `sonarr_research_series`
 - `sonarr_delete_series`
+- `sonarr_queue_action`
 
-Write tools require explicit identifiers where safety matters. Add operations require TMDb or TVDb IDs. Delete and re-search operations require exact Radarr or Sonarr internal IDs.
+Write tools require explicit identifiers where safety matters. Add operations require TMDb or TVDb IDs. Delete, re-search, and queue operations require exact Radarr or Sonarr internal IDs. Queue actions (`remove`, `blocklist`) clear stuck or import-blocked items without touching the torrent client.
 
 ## Whatbox Deployment
 
@@ -129,7 +131,7 @@ Whatbox Media Steward
 Suggested model-facing instructions:
 
 ```text
-Prefer read-only tools first. For add, delete, and re-search operations, first identify the exact media item with media_search or an overview tool. Never call delete tools with delete_files=true unless the user explicitly asked to delete files, not merely remove the item from Radarr or Sonarr. For ambiguous titles, return candidates or ask for disambiguation. Do not invent IDs. Do not claim to access torrent clients, indexers, shell, or the filesystem; this app intentionally does not expose those capabilities.
+Prefer read-only tools first. For add, delete, re-search, and queue operations, first identify the exact item with media_search or an overview tool. Never call delete tools with delete_files=true unless the user explicitly asked to delete files, not merely remove the item from Radarr or Sonarr. For ambiguous titles, return candidates or ask for disambiguation. Do not invent IDs. Queue actions require the queue_id from radarr_overview or sonarr_overview output. Do not claim to access torrent clients, indexers, shell, or the filesystem; this app intentionally does not expose those capabilities.
 ```
 
 ## Example Prompts
@@ -152,6 +154,10 @@ Is Heat already on the server? If not, prepare to add the 1995 Michael Mann film
 
 ```text
 Remove the 2013 film The Heat from Radarr, but do not delete files.
+```
+
+```text
+Are there any stuck or import-blocked items in the Radarr or Sonarr queue? If so, clear them.
 ```
 
 ## Troubleshooting
