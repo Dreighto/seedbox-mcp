@@ -1,0 +1,47 @@
+[project]
+name = "whatbox-media-mcp"
+version = "0.1.0"
+description = "Private MCP server for Whatbox media stack stewardship."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastmcp>=2",
+  "httpx>=0.28",
+  "pydantic>=2",
+  "pydantic-settings>=2",
+  "python-dotenv>=1",
+  "plexapi>=4",
+  "rapidfuzz>=3",
+  "starlette>=0.37",
+  "uvicorn>=0.30"
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_unused_ignores = false
+exclude = ["tests"]
+
+[dependency-groups]
+dev = [
+  "mypy",
+  "pytest",
+  "pytest-asyncio",
+  "respx",
+  "ruff"
+]
