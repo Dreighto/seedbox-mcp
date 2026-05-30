@@ -84,6 +84,7 @@ class PlexClient:
         parts: list[Any] = []
         for medium in media:
             parts.extend(getattr(medium, "parts", []) or [])
+        total_size = sum(getattr(p, "size", None) or 0 for p in parts) or None
         return {
             "type": getattr(item, "type", None),
             "title": getattr(item, "title", None),
@@ -94,6 +95,7 @@ class PlexClient:
             "last_viewed_at": iso_datetime(getattr(item, "lastViewedAt", None)),
             "view_count": getattr(item, "viewCount", None),
             "duration_minutes": self._duration_minutes(getattr(item, "duration", None)),
+            "size_on_disk_gb": round(total_size / 1024**3, 2) if total_size else None,
             "file_paths": [cast(str, part.file) for part in parts if getattr(part, "file", None)],
         }
 
