@@ -71,6 +71,30 @@ async def plex_overview(
     return await safe_tool(run)
 
 
+async def plex_library_size(
+    services: Services,
+    section: str = "all",
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        warnings: list[str] = []
+        sections = _requested_sections(services, section)
+        results = []
+        for name in sections:
+
+            async def get_size(name: str = name) -> dict[str, Any]:
+                return await services.plex.get_library_size(name)
+
+            size, warning = await partial_call(get_size)
+            if warning:
+                warnings.append(f"plex library size {name}: {warning}")
+            elif size:
+                results.append(size)
+        combined = round(sum(r["total_gb"] for r in results), 2)
+        return ToolResponse.success({"sections": results, "combined_total_gb": combined}, warnings)
+
+    return await safe_tool(run)
+
+
 def _requested_sections(services: Services, section: str) -> list[str]:
     if section == "movies":
         return [services.settings.plex_movie_section]

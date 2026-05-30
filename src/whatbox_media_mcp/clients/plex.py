@@ -74,6 +74,27 @@ class PlexClient:
         section = self._section(section_name)
         return [self._summarize_item(item, section.title) for item in section.search(limit=limit)]
 
+    async def get_library_size(self, section_name: str) -> dict[str, Any]:
+        section = self._section(section_name)
+        total_bytes = 0
+        # For TV sections, size lives on episodes not shows — use searchEpisodes().
+        # For movie sections, all() returns Movie objects which have media directly.
+        if section.type == "show":
+            items = section.searchEpisodes()  # type: ignore[attr-defined]
+            item_count = len({getattr(ep, "grandparentRatingKey", None) for ep in items})
+        else:
+            items = section.all()
+            item_count = len(items)
+        for item in items:
+            for medium in getattr(item, "media", []) or []:
+                for part in getattr(medium, "parts", []) or []:
+                    total_bytes += getattr(part, "size", None) or 0
+        return {
+            "section": section.title,
+            "total_gb": round(total_bytes / 1024**3, 2),
+            "item_count": item_count,
+        }
+
     def _section(self, section_name: str) -> Any:
         server = self._server()
         try:

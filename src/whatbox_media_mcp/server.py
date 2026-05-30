@@ -16,7 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from whatbox_media_mcp.config import Settings, load_settings
 from whatbox_media_mcp.oauth import OAuthStore
 from whatbox_media_mcp.runtime import Services, build_services
-from whatbox_media_mcp.tools.plex import plex_overview
+from whatbox_media_mcp.tools.plex import plex_library_size, plex_overview
 from whatbox_media_mcp.tools.radarr import (
     radarr_add_movie,
     radarr_delete_movie,
@@ -121,6 +121,9 @@ def create_mcp(services: Services) -> FastMCP:
         limit: int = 100,
     ) -> dict[str, Any]:
         return await sonarr_overview(services, include_series, include_queue, include_missing, limit)
+
+    async def plex_library_size_tool(section: str = "all") -> dict[str, Any]:
+        return await plex_library_size(services, section)
 
     async def plex_overview_tool(
         section: str = "all",
@@ -275,6 +278,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "radarr_overview", READ_ONLY, radarr_overview_tool)
     register_tool(mcp, "sonarr_overview", READ_ONLY, sonarr_overview_tool)
     register_tool(mcp, "plex_overview", READ_ONLY, plex_overview_tool)
+    register_tool(mcp, "plex_library_size", READ_ONLY, plex_library_size_tool)
     register_tool(mcp, "media_search", READ_ONLY, media_search_tool)
     register_tool(mcp, "radarr_add_movie", WRITE, radarr_add_movie_tool)
     register_tool(mcp, "radarr_research_movie", WRITE, radarr_research_movie_tool)
