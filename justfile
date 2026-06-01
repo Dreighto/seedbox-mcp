@@ -12,6 +12,10 @@ setup:
 run:
     uv run python -m whatbox_media_mcp.server
 
+# run the chat server
+run-chat:
+    uv run python -m whatbox_media_mcp.chat.server
+
 # run local-only tests
 test:
     uv run pytest
@@ -19,6 +23,14 @@ test:
 # test if MCP server is live
 test-smoke:
     uv run scripts/healthcheck.sh
+
+# run chat server tests
+test-chat:
+    uv run pytest tests/chat
+
+# run live chat tests (needs ANTHROPIC_API_KEY and MCP running)
+test-chat-live:
+    LIVE_TESTS=1 uv run pytest tests/chat -m live -v
 
 # run tests that validate connections to services
 test-live:

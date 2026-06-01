@@ -5,8 +5,10 @@ description = "Private MCP server for Whatbox media stack stewardship."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "anthropic>=0.25",
   "fastmcp>=2",
   "httpx>=0.28",
+  "itsdangerous>=2",
   "pydantic>=2",
   "pydantic-settings>=2",
   "python-dotenv>=1",
@@ -15,6 +17,10 @@ dependencies = [
   "starlette>=0.37",
   "uvicorn>=0.30"
 ]
+
+[project.scripts]
+whatbox-media-mcp = "whatbox_media_mcp.server:main"
+whatbox-chat = "whatbox_media_mcp.chat.server:main"
 
 [build-system]
 requires = ["hatchling"]

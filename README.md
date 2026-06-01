@@ -1,6 +1,13 @@
-# Whatbox Media Steward MCP
+# Whatbox Media Steward
 
-Private remote MCP server for a Whatbox media stack. It exposes compact tools for Plex, Radarr, and Sonarr so your agent of choice can inspect media state and do basic actions.
+Two co-hosted services for a Whatbox media stack:
+
+- **MCP server** (`whatbox-media-mcp`) — exposes compact tools for Plex, Radarr, and Sonarr so your agent of choice can inspect media state and do basic actions.
+- **Chat interface** (`whatbox-chat`) — a Plex-authenticated single-page chat UI powered by Claude Haiku, pre-wired to the MCP server. Designed for family members who have Plex access but not Claude.
+
+---
+
+## MCP server
 
 The service is intentionally narrow:
 
@@ -18,10 +25,11 @@ Requires `just` and `uv`.
 cp .env.example .env
 # fill in required values — see Configuration below
 just setup
-just run
+just run        # MCP server on :17432
+just run-chat   # chat interface on :17433 (separate terminal)
 ```
 
-The default bind is `127.0.0.1:17432`. The MCP endpoint is `/mcp`; a basic unauthenticated health check is available at `/health`.
+The MCP endpoint is `/mcp`; a basic unauthenticated health check is available at `/health`.
 
 Every `/mcp` request requires either a static bearer token or a valid OAuth access token:
 
@@ -67,6 +75,62 @@ All settings are read from `.env` or environment variables.
 | `OAUTH_ACCESS_TOKEN_TTL` | `3600` | OAuth access token lifetime in seconds |
 
 Startup logs print a redacted config summary. API keys, Plex tokens, bearer tokens, and request headers are never logged.
+
+---
+
+## Chat Interface
+
+A single-page chat UI backed by Claude Haiku. Anyone who has friend-level access to the Plex server can log in with their Plex account and chat with an assistant that has full access to the MCP tools.
+
+Write actions (add, delete, queue) require an in-chat confirmation step — Haiku always calls tools with `confirm=false` first to show a preview, and only proceeds with `confirm=true` after the user says yes.
+
+### Configuration
+
+The chat server reads the same `.env` file as the MCP server and adds:
+
+#### Required
+
+| Variable | Notes |
+|---|---|
+| `CHAT_PUBLIC_BASE_URL` | Public HTTPS base URL for the chat app (e.g. `https://example.whatbox.ca/chat`) — used as the Plex OAuth callback origin |
+| `CHAT_SESSION_SECRET` | Long random string used to sign session cookies |
+| `CHAT_PLEX_CLIENT_ID` | Stable UUID identifying this app to Plex — generate once with `python3 -c "import uuid; print(uuid.uuid4())"` |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude Haiku |
+
+#### Optional
+
+| Variable | Default | Notes |
+|---|---|---|
+| `CHAT_HOST` | `127.0.0.1` | Bind address |
+| `CHAT_PORT` | `17433` | Bind port |
+| `SYSTEM_PROMPT_PATH` | _(none)_ | Path to a plain-text file that overrides the default system prompt |
+
+### How authentication works
+
+1. User visits the chat URL and is redirected to `plex.tv` to sign in.
+2. After signing in, Plex redirects back to `/auth/callback`.
+3. The server verifies the user is a friend (shared-access user) of the Plex server.
+4. A signed session cookie is set — no expiry, valid until the browser clears cookies.
+
+Only users who already have Plex friend access can log in. There is no separate user management.
+
+### Whatbox deployment
+
+Run alongside the MCP server. Each needs its own `screen` session:
+
+```bash
+screen -dmS media-mcp  bash -c 'cd ~/seedboxmcp && just run      2>&1 | tee -a ~/seedboxmcp/mcp.log'
+screen -dmS media-chat bash -c 'cd ~/seedboxmcp && just run-chat  2>&1 | tee -a ~/seedboxmcp/chat.log'
+```
+
+Add both to crontab for reboot persistence:
+
+```cron
+@reboot sleep 30 && screen -dmS media-mcp  bash -c 'cd ~/seedboxmcp && just run      2>&1 | tee -a ~/seedboxmcp/mcp.log'
+@reboot sleep 30 && screen -dmS media-chat bash -c 'cd ~/seedboxmcp && just run-chat  2>&1 | tee -a ~/seedboxmcp/chat.log'
+```
+
+Configure a second Whatbox managed HTTPS link forwarding to `http://127.0.0.1:17433` and set `CHAT_PUBLIC_BASE_URL` to the resulting URL.
 
 ### Finding your Plex token
 
@@ -127,13 +191,9 @@ screen -dmS media-mcp bash -c 'cd ~/seedboxmcp && scripts/run.sh 2>&1 | tee -a ~
 
 ### Whatbox managed HTTPS link
 
-Configure a Whatbox managed HTTPS link forwarding to:
+Configure a Whatbox managed HTTPS link forwarding to `http://127.0.0.1:17432` and set `MCP_PUBLIC_BASE_URL` to the resulting HTTPS URL.
 
-```text
-http://127.0.0.1:17432
-```
-
-Set `MCP_PUBLIC_BASE_URL` to the resulting HTTPS URL.
+See the [Chat Interface](#chat-interface) section for deploying the companion chat server.
 
 ### Verify
 
@@ -167,13 +227,16 @@ Prefer read-only tools first. For add, delete, re-search, and queue operations, 
 Consult the `justfile`:
 
 ```bash
-just setup       # install runtime and dev dependencies with uv
-just run         # run the MCP server
-just test        # run all mocked tests (no live services required)
-just test-live   # run live integration tests (requires LIVE_TESTS=1)
-just test-smoke  # call /health on the configured host/port
-just format      # format with ruff
-just check       # ruff lint + mypy type-check
+just setup            # install runtime and dev dependencies with uv
+just run              # run the MCP server (:17432)
+just run-chat         # run the chat interface (:17433)
+just test             # run MCP unit tests (no live services required)
+just test-chat        # run chat unit tests (no live services required)
+just test-live        # run MCP live integration tests (requires LIVE_TESTS=1)
+just test-chat-live   # run chat live tests (requires LIVE_TESTS=1 + running MCP server)
+just test-smoke       # call /health on the configured host/port
+just format           # format with ruff
+just check            # ruff lint + mypy type-check
 ```
 
 ## Tool Surface
