@@ -51,7 +51,7 @@ async def chat_turn(
     message: str,
     history: list[dict[str, Any]],
     settings: ChatSettings,
-    mcp_client: Client,
+    mcp_client: Client[Any],
     anthropic_client: AsyncAnthropic,
 ) -> tuple[str, list[dict[str, Any]]]:
     async with mcp_client:
@@ -67,8 +67,8 @@ async def chat_turn(
             model=_MODEL,
             max_tokens=4096,
             system=system_prompt,
-            tools=tools,
-            messages=messages,
+            tools=tools,  # type: ignore[arg-type]
+            messages=messages,  # type: ignore[arg-type]
         )
 
         if response.stop_reason == "tool_use":

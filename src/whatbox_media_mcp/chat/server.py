@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from anthropic import AsyncAnthropic
@@ -33,7 +34,7 @@ async def _serve_index(request: Request) -> FileResponse:
 async def _chat_endpoint(request: Request) -> JSONResponse:
     body = await request.json()
     message: str = body.get("message", "")
-    history: list = body.get("history", [])
+    history: list[Any] = body.get("history", [])
 
     settings: ChatSettings = request.app.state.settings
     reply, updated_history = await chat_turn(

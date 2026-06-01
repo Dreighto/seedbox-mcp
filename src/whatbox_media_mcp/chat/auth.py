@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlencode
 
 import httpx
@@ -81,13 +81,13 @@ async def poll_pin(pin_id: int, settings: ChatSettings, retries: int = 8, delay:
 
 def verify_server_access(user_token: str, admin_plex_token: str) -> str | None:
     try:
-        admin_account = MyPlexAccount(token=admin_plex_token)
-        friends = admin_account.users()
+        admin_account = MyPlexAccount(token=admin_plex_token)  # type: ignore[no-untyped-call]
+        friends = admin_account.users()  # type: ignore[no-untyped-call]
         friend_names = {u.username for u in friends}
-        user_account = MyPlexAccount(token=user_token)
+        user_account = MyPlexAccount(token=user_token)  # type: ignore[no-untyped-call]
         username = user_account.username
         if username in friend_names:
-            return username
+            return str(username)
         return None
     except Exception:
         logger.exception("Plex server access verification failed")
@@ -165,8 +165,9 @@ class PlexAuthMiddleware(BaseHTTPMiddleware):
         self._settings = settings
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
-        if not request.url.path.startswith("/api/"):
-            return await call_next(request)
+        path = request.url.path
+        if not (path.startswith("/api/") or path.startswith("/chat")):
+            return cast(Response, await call_next(request))
 
         secret = self._settings.chat_session_secret.get_secret_value()
         cookie = request.cookies.get(_SESSION_COOKIE, "")
@@ -175,4 +176,4 @@ class PlexAuthMiddleware(BaseHTTPMiddleware):
             return RedirectResponse("/auth/login", status_code=302)
 
         request.state.plex_username = username
-        return await call_next(request)
+        return cast(Response, await call_next(request))
