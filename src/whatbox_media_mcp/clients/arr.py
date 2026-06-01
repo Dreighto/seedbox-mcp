@@ -66,10 +66,16 @@ class ArrClient:
         if response.status_code == 404:
             raise UpstreamError("not_found", "Upstream item was not found.", {"path": clean_path})
         if response.is_error:
+            details: dict[str, Any] = {"path": clean_path, "status_code": response.status_code}
+            if response.content:
+                try:
+                    details["body"] = response.json()
+                except Exception:
+                    details["body"] = response.text[:500]
             raise UpstreamError(
                 "upstream_unreachable",
                 "Upstream service returned an error.",
-                {"path": clean_path, "status_code": response.status_code},
+                details,
             )
         if response.status_code == 204 or not response.content:
             return None

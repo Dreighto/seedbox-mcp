@@ -123,6 +123,7 @@ def create_mcp(services: Services) -> FastMCP:
         return await sonarr_overview(services, include_series, include_queue, include_missing, limit)
 
     async def plex_library_size_tool(section: str = "all") -> dict[str, Any]:
+        """section values: all, movies, tv."""
         return await plex_library_size(services, section)
 
     async def plex_overview_tool(
@@ -132,6 +133,7 @@ def create_mcp(services: Services) -> FastMCP:
         include_staleness: bool = True,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """section values: all, movies, tv."""
         return await plex_overview(
             services, section, include_activity, include_recently_added, include_staleness, limit
         )
@@ -143,6 +145,10 @@ def create_mcp(services: Services) -> FastMCP:
         include_external_lookup: bool = True,
         limit: int = 10,
     ) -> dict[str, Any]:
+        """Search for movies, TV series, or Plex items. Returns tmdb_id/tvdb_id for use with add tools.
+
+        types values (list): movie, series, plex. Defaults to all three.
+        """
         return await media_search(services, query, types, include_existing, include_external_lookup, limit)
 
     async def radarr_add_movie_tool(
@@ -156,6 +162,10 @@ def create_mcp(services: Services) -> FastMCP:
         search_now: bool = True,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """Add a movie to Radarr. Use media_search first to get the correct tmdb_id.
+
+        minimum_availability values: announced, inCinemas, released, tba.
+        """
         return await radarr_add_movie(
             services,
             tmdb_id,
@@ -174,6 +184,7 @@ def create_mcp(services: Services) -> FastMCP:
         mode: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """mode values: search, refresh, scan_downloaded."""
         return await radarr_research_movie(services, radarr_id, mode, confirm)
 
     async def sonarr_add_series_tool(
@@ -187,6 +198,11 @@ def create_mcp(services: Services) -> FastMCP:
         search_now: bool = True,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """Add a TV series to Sonarr. Use media_search first to get the correct tvdb_id.
+
+        monitor values: all, future, missing, existing, pilot, firstSeason, latestSeason, none.
+        Use firstSeason to monitor only S1, latestSeason for the newest season only.
+        """
         return await sonarr_add_series(
             services,
             tvdb_id,
@@ -205,6 +221,7 @@ def create_mcp(services: Services) -> FastMCP:
         mode: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """mode values: series_search, refresh, missing_episode_search."""
         return await sonarr_research_series(services, sonarr_id, mode, confirm)
 
     async def radarr_queue_action_tool(
@@ -212,6 +229,7 @@ def create_mcp(services: Services) -> FastMCP:
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """action values: remove, blocklist."""
         return await radarr_queue_action(services, queue_id, action, confirm)
 
     async def sonarr_queue_action_tool(
@@ -219,6 +237,7 @@ def create_mcp(services: Services) -> FastMCP:
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """action values: remove, blocklist."""
         return await sonarr_queue_action(services, queue_id, action, confirm)
 
     async def radarr_delete_movie_tool(
@@ -245,6 +264,7 @@ def create_mcp(services: Services) -> FastMCP:
         include_missing: bool = True,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """media_type values: all, movies, tv."""
         return await staleness_report(
             services,
             media_type,
@@ -263,6 +283,7 @@ def create_mcp(services: Services) -> FastMCP:
         media_type: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """media_type values: movie, episode."""
         return await tautulli_history(services, user, rating_key, start_date, end_date, media_type, limit)
 
     async def tautulli_users_tool() -> dict[str, Any]:
@@ -272,6 +293,7 @@ def create_mcp(services: Services) -> FastMCP:
         user_id: int | None = None,
         grouping: str = "monthly",
     ) -> dict[str, Any]:
+        """grouping values: daily, monthly, total."""
         return await tautulli_user_stats(services, user_id, grouping)
 
     register_tool(mcp, "media_status", READ_ONLY, media_status_tool)
