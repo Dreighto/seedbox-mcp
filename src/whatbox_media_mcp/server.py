@@ -91,12 +91,13 @@ class BearerAuthApp:
 
         headers = {key.decode("latin-1").lower(): value.decode("latin-1") for key, value in scope.get("headers", [])}
         auth = headers.get("authorization", "")
-        if auth.startswith("Bearer "):
-            candidate = auth[len("Bearer ") :]
-            if _hmac.compare_digest(candidate, self.token):
-                return True
-            if self.oauth_store is not None:
-                return self.oauth_store.validate_access_token(candidate)
+        candidate = auth[len("Bearer ") :] if auth.startswith("Bearer ") else auth
+        if not candidate:
+            return False
+        if _hmac.compare_digest(candidate, self.token):
+            return True
+        if self.oauth_store is not None:
+            return self.oauth_store.validate_access_token(candidate)
         return False
 
 
@@ -112,6 +113,12 @@ def create_mcp(services: Services) -> FastMCP:
         include_missing: bool = True,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """Returns Radarr library state.
+
+        Use include_queue=true to retrieve queue_id values needed by radarr_queue_action.
+        Set include_movies=false or include_missing=false to reduce response size when
+        only queue data is needed.
+        """
         return await radarr_overview(services, include_movies, include_queue, include_missing, limit)
 
     async def sonarr_overview_tool(
@@ -120,10 +127,18 @@ def create_mcp(services: Services) -> FastMCP:
         include_missing: bool = True,
         limit: int = 100,
     ) -> dict[str, Any]:
+        """Returns Sonarr library state.
+
+        Use include_queue=true to retrieve queue_id values needed by sonarr_queue_action.
+        Set include_series=false or include_missing=false to reduce response size when
+        only queue data is needed.
+        """
         return await sonarr_overview(services, include_series, include_queue, include_missing, limit)
 
     async def plex_library_size_tool(section: str = "all") -> dict[str, Any]:
-        """section values: all, movies, tv."""
+        """Returns the size of the library in GB
+        
+        section values: all, movies, tv."""
         return await plex_library_size(services, section)
 
     async def plex_overview_tool(
@@ -139,17 +154,46 @@ def create_mcp(services: Services) -> FastMCP:
         )
 
     async def media_search_tool(
-        query: str,
+        query: str | None = None,
         types: list[str] | None = None,
         include_existing: bool = True,
         include_external_lookup: bool = True,
         limit: int = 10,
+        director: str | None = None,
+        actor: str | None = None,
+        genre: str | None = None,
+        language: str | None = None,
+        year: int | None = None,
+        country: str | None = None,
     ) -> dict[str, Any]:
         """Search for movies, TV series, or Plex items. Returns tmdb_id/tvdb_id for use with add tools.
 
+        Either query or at least one attribute filter must be provided. They can be combined.
+
         types values (list): movie, series, plex. Defaults to all three.
+          Narrow types to reduce noise: use ["movie"] for Radarr operations, ["series"] for
+          Sonarr operations, ["plex"] for Plex-only queries.
+
+        include_external_lookup: set to false when locating an existing item for delete, research,
+          or queue operations — those workflows only need items already in Radarr/Sonarr.
+          External lookup is only needed when adding new content not yet in the library.
+
+        Attribute filters:
+          director, actor, country — matched via Plex only (Radarr/Sonarr lack these fields).
+            When any of these are set, Plex is searched automatically even if not in types.
+            Plex requires the full name exactly (e.g. "Akira Kurosawa", not "Kurosawa").
+            When a crew/country filter is active, Radarr/Sonarr results are suppressed
+            entirely to avoid returning unfiltered partial matches.
+          genre, language, year — matched via both Radarr/Sonarr and Plex.
+            language matches originalLanguage in Radarr and audioLanguage in Plex (e.g. "Japanese").
+            genre is a substring match (e.g. "Drama" matches "Drama", "Drama/Thriller").
+
+        Attribute filters suppress external lookup (include_external_lookup is ignored when filters are set).
         """
-        return await media_search(services, query, types, include_existing, include_external_lookup, limit)
+        return await media_search(
+            services, query, types, include_existing, include_external_lookup, limit,
+            director=director, actor=actor, genre=genre, language=language, year=year, country=country,
+        )
 
     async def radarr_add_movie_tool(
         tmdb_id: int,
@@ -184,7 +228,18 @@ def create_mcp(services: Services) -> FastMCP:
         mode: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """mode values: search, refresh, scan_downloaded."""
+        """Trigger a Radarr action on an existing movie. Use media_search to get radarr_id.
+
+        This is the right tool when a movie is stuck, missing a file, has the wrong quality,
+        or needs a re-grab — use it before considering delete/re-add.
+
+        mode values:
+          search         — ask Radarr to search indexers for a new or better release.
+                           Use when the movie has no file, is the wrong quality, or a re-grab is needed.
+          refresh        — reload metadata from TMDb without triggering a new download search.
+          scan_downloaded — rescan the movie's folder to import a file already on disk.
+                           Use when a file exists but Radarr hasn't picked it up yet.
+        """
         return await radarr_research_movie(services, radarr_id, mode, confirm)
 
     async def sonarr_add_series_tool(
@@ -221,7 +276,17 @@ def create_mcp(services: Services) -> FastMCP:
         mode: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """mode values: series_search, refresh, missing_episode_search."""
+        """Trigger a Sonarr action on an existing series. Use media_search to get sonarr_id.
+
+        This is the right tool when episodes are missing, stuck, or need a re-grab —
+        use it before considering delete/re-add.
+
+        mode values:
+          series_search         — search indexers for all monitored episodes in the series.
+          missing_episode_search — search only for episodes Sonarr has flagged as missing.
+                                   Prefer this over series_search when only a subset are missing.
+          refresh               — reload metadata from TVDb without triggering a download search.
+        """
         return await sonarr_research_series(services, sonarr_id, mode, confirm)
 
     async def radarr_queue_action_tool(
@@ -229,7 +294,13 @@ def create_mcp(services: Services) -> FastMCP:
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """action values: remove, blocklist."""
+        """Act on a stuck Radarr queue item. Obtain queue_id from radarr_overview.
+
+        action values:
+          remove    — clears the item from the queue without blacklisting the release;
+                      Radarr may re-grab the same release on the next search.
+          blocklist — clears the item and marks the release as unwanted so it won't be re-grabbed.
+        """
         return await radarr_queue_action(services, queue_id, action, confirm)
 
     async def sonarr_queue_action_tool(
@@ -237,7 +308,13 @@ def create_mcp(services: Services) -> FastMCP:
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """action values: remove, blocklist."""
+        """Act on a stuck Sonarr queue item. Obtain queue_id from sonarr_overview.
+
+        action values:
+          remove    — clears the item from the queue without blacklisting the release;
+                      Sonarr may re-grab the same release on the next search.
+          blocklist — clears the item and marks the release as unwanted so it won't be re-grabbed.
+        """
         return await sonarr_queue_action(services, queue_id, action, confirm)
 
     async def radarr_delete_movie_tool(
@@ -246,6 +323,16 @@ def create_mcp(services: Services) -> FastMCP:
         add_import_exclusion: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """Remove a movie from Radarr. Use media_search (include_external_lookup=false) to get radarr_id.
+
+        delete_files: false (default) removes the movie from Radarr management but leaves the
+          file on disk — safe when the file should remain accessible in Plex.
+          Set to true only when the file itself should be deleted.
+        add_import_exclusion: prevents Radarr from re-importing or re-monitoring this movie
+          after a future library scan. Set to true when you do not want it re-added automatically.
+        confirm: false (default) is a dry run — shows what would be removed without acting.
+          Set to true to perform the deletion.
+        """
         return await radarr_delete_movie(services, radarr_id, delete_files, add_import_exclusion, confirm)
 
     async def sonarr_delete_series_tool(
@@ -254,17 +341,30 @@ def create_mcp(services: Services) -> FastMCP:
         add_import_exclusion: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
+        """Remove a series from Sonarr. Use media_search (include_external_lookup=false) to get sonarr_id.
+
+        delete_files: false (default) removes the series from Sonarr management but leaves files
+          on disk — safe when they should remain accessible in Plex.
+          Set to true only when the files themselves should be deleted.
+        add_import_exclusion: prevents Sonarr from re-importing or re-monitoring this series
+          after a future library scan. Set to true when you do not want it re-added automatically.
+        confirm: false (default) is a dry run — shows what would be removed without acting.
+          Set to true to perform the deletion.
+        """
         return await sonarr_delete_series(services, sonarr_id, delete_files, add_import_exclusion, confirm)
+
 
     async def staleness_report_tool(
         media_type: str = "all",
-        older_than_days: int = 90,
+        older_than_days: int = 120,
         include_unwatched: bool = True,
-        include_unmanaged: bool = True,
-        include_missing: bool = True,
+        include_unmanaged: bool = False,
+        include_missing: bool = False,
         limit: int = 100,
     ) -> dict[str, Any]:
-        """media_type values: all, movies, tv."""
+        """Lists items that have not been watched for a while.
+        
+        media_type values: all, movies, tv."""
         return await staleness_report(
             services,
             media_type,
@@ -283,7 +383,12 @@ def create_mcp(services: Services) -> FastMCP:
         media_type: str | None = None,
         limit: int = 100,
     ) -> dict[str, Any]:
-        """media_type values: movie, episode."""
+        """Returns Tautulli watch history.
+
+        media_type values: movie, episode.
+        start_date / end_date format: YYYY-MM-DD.
+        rating_key: Plex rating key to filter history for a specific item.
+        """
         return await tautulli_history(services, user, rating_key, start_date, end_date, media_type, limit)
 
     async def tautulli_users_tool() -> dict[str, Any]:

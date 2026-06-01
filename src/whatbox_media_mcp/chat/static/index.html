@@ -3,13 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Whatbox Media</title>
+<title>Media server chatbot</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    background: #f5f5f5;
+    background: #111;
     height: 100dvh;
     display: flex;
     flex-direction: column;
@@ -22,8 +23,8 @@
     height: 100dvh;
     display: flex;
     flex-direction: column;
-    background: #fff;
-    box-shadow: 0 0 24px rgba(0,0,0,.08);
+    background: #1a1a1a;
+    box-shadow: 0 0 24px rgba(0,0,0,.5);
   }
 
   header {
@@ -31,22 +32,22 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 18px;
-    border-bottom: 1px solid #e5e5e5;
+    border-bottom: 1px solid #2a2a2a;
     flex-shrink: 0;
   }
 
-  header h1 { font-size: 1rem; font-weight: 600; color: #111; }
+  header h1 { font-size: 1rem; font-weight: 600; color: #e0e0e0; }
 
   #logout-btn {
     background: none;
-    border: 1px solid #ddd;
+    border: 1px solid #3a3a3a;
     border-radius: 6px;
     padding: 5px 12px;
     font-size: .8rem;
     cursor: pointer;
-    color: #555;
+    color: #888;
   }
-  #logout-btn:hover { background: #f5f5f5; }
+  #logout-btn:hover { background: #2a2a2a; color: #e0e0e0; }
 
   #messages {
     flex: 1;
@@ -63,29 +64,73 @@
     border-radius: 16px;
     font-size: .93rem;
     line-height: 1.5;
-    white-space: pre-wrap;
     word-break: break-word;
   }
 
   .bubble.user {
     align-self: flex-end;
-    background: #1a1a1a;
+    background: #2563eb;
     color: #fff;
     border-bottom-right-radius: 4px;
+    white-space: pre-wrap;
   }
 
   .bubble.assistant {
     align-self: flex-start;
-    background: #f0f0f0;
-    color: #111;
+    background: #252525;
+    color: #d4d4d4;
     border-bottom-left-radius: 4px;
+  }
+
+  /* Markdown inside assistant bubbles */
+  .bubble.assistant p          { margin-bottom: .5em; }
+  .bubble.assistant p:last-child { margin-bottom: 0; }
+  .bubble.assistant ul,
+  .bubble.assistant ol         { margin: .4em 0 .4em 1.25em; }
+  .bubble.assistant li         { margin-bottom: .2em; }
+  .bubble.assistant strong     { color: #fff; }
+  .bubble.assistant em         { font-style: italic; color: #bbb; }
+  .bubble.assistant h1,
+  .bubble.assistant h2,
+  .bubble.assistant h3         { color: #fff; margin: .6em 0 .3em; font-weight: 600; }
+  .bubble.assistant h1         { font-size: 1.1em; }
+  .bubble.assistant h2         { font-size: 1.05em; }
+  .bubble.assistant h3         { font-size: 1em; }
+  .bubble.assistant code {
+    background: #333;
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-family: "SF Mono", ui-monospace, monospace;
+    font-size: .85em;
+    color: #e0e0e0;
+  }
+  .bubble.assistant pre {
+    background: #0d0d0d;
+    border: 1px solid #2a2a2a;
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: .5em 0;
+    overflow-x: auto;
+  }
+  .bubble.assistant pre code { background: none; padding: 0; }
+  .bubble.assistant hr {
+    border: none;
+    border-top: 1px solid #333;
+    margin: .6em 0;
+  }
+  .bubble.assistant a          { color: #60a5fa; text-decoration: underline; }
+  .bubble.assistant blockquote {
+    border-left: 3px solid #3a3a3a;
+    margin: .4em 0;
+    padding-left: .75em;
+    color: #888;
   }
 
   /* bouncing ellipsis */
   .ellipsis { display: inline-flex; gap: 4px; padding: 4px 2px; }
   .ellipsis span {
     width: 7px; height: 7px;
-    background: #999;
+    background: #555;
     border-radius: 50%;
     animation: bounce 1.2s infinite ease-in-out;
   }
@@ -100,13 +145,14 @@
     display: flex;
     gap: 8px;
     padding: 12px 16px;
-    border-top: 1px solid #e5e5e5;
+    border-top: 1px solid #2a2a2a;
     flex-shrink: 0;
+    background: #1a1a1a;
   }
 
   #input {
     flex: 1;
-    border: 1px solid #ddd;
+    border: 1px solid #3a3a3a;
     border-radius: 20px;
     padding: 10px 16px;
     font-size: .93rem;
@@ -116,11 +162,14 @@
     line-height: 1.4;
     max-height: 120px;
     overflow-y: auto;
+    background: #252525;
+    color: #e0e0e0;
   }
-  #input:focus { border-color: #1a1a1a; }
+  #input::placeholder { color: #555; }
+  #input:focus { border-color: #555; }
 
   #send-btn {
-    background: #1a1a1a;
+    background: #2563eb;
     color: #fff;
     border: none;
     border-radius: 20px;
@@ -130,14 +179,14 @@
     flex-shrink: 0;
     align-self: flex-end;
   }
-  #send-btn:disabled { background: #ccc; cursor: default; }
-  #send-btn:not(:disabled):hover { background: #333; }
+  #send-btn:disabled { background: #2a2a2a; color: #555; cursor: default; }
+  #send-btn:not(:disabled):hover { background: #3b82f6; }
 </style>
 </head>
 <body>
 <div id="shell">
   <header>
-    <h1>📺 Whatbox Media</h1>
+    <h1>Media server chatbot</h1>
     <button id="logout-btn">Sign out</button>
   </header>
   <div id="messages"></div>
@@ -148,6 +197,8 @@
 </div>
 
 <script>
+  marked.use({ breaks: true, gfm: true });
+
   const messagesEl = document.getElementById('messages');
   const inputEl    = document.getElementById('input');
   const sendBtn    = document.getElementById('send-btn');
@@ -173,7 +224,11 @@
   function addBubble(role, content) {
     const div = document.createElement('div');
     div.className = `bubble ${role}`;
-    div.textContent = content;
+    if (role === 'assistant') {
+      div.innerHTML = marked.parse(content);
+    } else {
+      div.textContent = content;
+    }
     messagesEl.appendChild(div);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return div;
@@ -219,7 +274,7 @@
       const data = await resp.json();
       history = data.history;
       sessionStorage.setItem('chat_history', JSON.stringify(history));
-      ellipsis.textContent = data.reply;
+      ellipsis.innerHTML = marked.parse(data.reply);
     } catch {
       ellipsis.textContent = 'Could not reach the server. Please try again.';
     } finally {

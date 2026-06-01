@@ -30,9 +30,9 @@ class TautulliClient:
         if rating_key:
             params["rating_key"] = rating_key
         if start_date:
-            params["start_date"] = start_date
+            params["after"] = start_date
         if end_date:
-            params["end_date"] = end_date
+            params["before"] = end_date
         if media_type:
             params["media_type"] = media_type
         return await self._cmd("get_history", **params)

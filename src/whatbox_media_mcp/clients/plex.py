@@ -66,9 +66,20 @@ class PlexClient:
         section = self._section(section_name)
         return [self._summarize_item(item, section.title) for item in section.recentlyAdded(maxresults=limit)]
 
-    async def search(self, section_name: str, query: str, limit: int) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        section_name: str,
+        query: str | None = None,
+        limit: int = 10,
+        plex_filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         section = self._section(section_name)
-        return [self._summarize_item(item, section.title) for item in section.search(title=query, limit=limit)]
+        search_kwargs: dict[str, Any] = {"limit": limit}
+        if query:
+            search_kwargs["title"] = query
+        if plex_filters:
+            search_kwargs["filters"] = plex_filters
+        return [self._summarize_item(item, section.title) for item in section.search(**search_kwargs)]
 
     async def get_basic_library_items(self, section_name: str, limit: int) -> list[dict[str, Any]]:
         section = self._section(section_name)
@@ -112,6 +123,7 @@ class PlexClient:
         for medium in media:
             parts.extend(getattr(medium, "parts", []) or [])
         total_size = sum(getattr(p, "size", None) or 0 for p in parts) or None
+        directors = [d.tag for d in getattr(item, "directors", []) or []] or None
         return {
             "type": getattr(item, "type", None),
             "title": getattr(item, "title", None),
@@ -124,6 +136,7 @@ class PlexClient:
             "duration_minutes": self._duration_minutes(getattr(item, "duration", None)),
             "size_on_disk_gb": round(total_size / 1024**3, 2) if total_size else None,
             "file_paths": [cast(str, part.file) for part in parts if getattr(part, "file", None)],
+            "directors": directors,
         }
 
     @staticmethod

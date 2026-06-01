@@ -14,6 +14,7 @@ run:
 
 # run the chat server
 run-chat:
+    open http://127.0.0.1:${CHAT_PORT:-17433} &
     uv run python -m whatbox_media_mcp.chat.server
 
 # run local-only tests

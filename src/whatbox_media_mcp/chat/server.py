@@ -15,7 +15,7 @@ from starlette.staticfiles import StaticFiles
 from whatbox_media_mcp.chat.ai import chat_turn, load_system_prompt
 from whatbox_media_mcp.chat.auth import (
     PlexAuthMiddleware,
-    callback_handler,
+    check_handler,
     login_handler,
     logout_handler,
 )
@@ -54,14 +54,14 @@ def create_chat_app(settings: ChatSettings) -> Starlette:
     async def _login(request: Request) -> object:
         return await login_handler(request, settings)
 
-    async def _callback(request: Request) -> object:
-        return await callback_handler(request, settings)
+    async def _check(request: Request) -> object:
+        return await check_handler(request, settings)
 
     routes = [
         Route("/", lambda r: RedirectResponse("/chat", status_code=302)),
         Route("/chat", _serve_index),
         Route("/auth/login", _login),
-        Route("/auth/callback", _callback),
+        Route("/auth/check", _check),
         Route("/auth/logout", logout_handler, methods=["POST"]),
         Route("/api/chat", _chat_endpoint, methods=["POST"]),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR))),
