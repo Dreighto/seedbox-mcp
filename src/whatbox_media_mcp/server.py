@@ -319,15 +319,14 @@ def create_mcp(services: Services) -> FastMCP:
 
     async def radarr_delete_movie_tool(
         radarr_id: int,
-        delete_files: bool = False,
+        delete_files: bool = True,
         add_import_exclusion: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
         """Remove a movie from Radarr. Use media_search (include_external_lookup=false) to get radarr_id.
 
-        delete_files: false (default) removes the movie from Radarr management but leaves the
-          file on disk — safe when the file should remain accessible in Plex.
-          Set to true only when the file itself should be deleted.
+        delete_files: false removes the movie from Radarr management but leaves the
+          file on disk. Typically file itself should be deleted on a delete request.
         add_import_exclusion: prevents Radarr from re-importing or re-monitoring this movie
           after a future library scan. Set to true when you do not want it re-added automatically.
         confirm: false (default) is a dry run — shows what would be removed without acting.
@@ -337,15 +336,15 @@ def create_mcp(services: Services) -> FastMCP:
 
     async def sonarr_delete_series_tool(
         sonarr_id: int,
-        delete_files: bool = False,
+        delete_files: bool = True,
         add_import_exclusion: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
         """Remove a series from Sonarr. Use media_search (include_external_lookup=false) to get sonarr_id.
 
-        delete_files: false (default) removes the series from Sonarr management but leaves files
-          on disk — safe when they should remain accessible in Plex.
-          Set to true only when the files themselves should be deleted.
+        delete_files: false removes the series from Sonarr management but leaves files
+          on disk.
+          Typically the files themselves should be deleted on a delete request.
         add_import_exclusion: prevents Sonarr from re-importing or re-monitoring this series
           after a future library scan. Set to true when you do not want it re-added automatically.
         confirm: false (default) is a dry run — shows what would be removed without acting.

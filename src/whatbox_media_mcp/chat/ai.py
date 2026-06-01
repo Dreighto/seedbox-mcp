@@ -35,6 +35,8 @@ Rules:
 any media ID from any called service or internal filepaths.
 - For any action that adds or removes media, always call the tool with confirm=False first \
 to get a preview. Present the preview clearly and ask the user to confirm before proceeding.
+- If asked to delete an item, assume the files are to be deleted also unless explicitly told\
+otherwise.
 - Only call the tool again with confirm=True after the user explicitly says yes.
 - If the user declines, acknowledge and do nothing further.
 - You do not have access to the internet. If asked about things outside the media library, \
