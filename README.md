@@ -117,23 +117,9 @@ The chat server reads the same `.env` file as the MCP server and adds:
 
 Only users who already have Plex friend access can log in. There is no separate user management.
 
-### Deploying the chat server (Whatbox example)
+### Deploying the chat server
 
-Run alongside the MCP server. On a seedbox slot without systemd, each needs its own `screen` session:
-
-```bash
-screen -dmS media-mcp  bash -c 'cd ~/seedboxmcp && just run      2>&1 | tee -a ~/seedboxmcp/mcp.log'
-screen -dmS media-chat bash -c 'cd ~/seedboxmcp && just run-chat  2>&1 | tee -a ~/seedboxmcp/chat.log'
-```
-
-Add both to crontab for reboot persistence:
-
-```cron
-@reboot sleep 30 && screen -dmS media-mcp  bash -c 'cd ~/seedboxmcp && just run      2>&1 | tee -a ~/seedboxmcp/mcp.log'
-@reboot sleep 30 && screen -dmS media-chat bash -c 'cd ~/seedboxmcp && just run-chat  2>&1 | tee -a ~/seedboxmcp/chat.log'
-```
-
-Front the chat port (`17433`) with HTTPS the same way you do for the MCP server — on Whatbox that's a second managed HTTPS link; elsewhere, your reverse proxy of choice. Set `CHAT_PUBLIC_BASE_URL` to the resulting public URL.
+The chat server is launched alongside the MCP server by `scripts/start.sh` — see the [Deployment](#deployment-whatbox-example) section below. Front the chat port (`17433`) with HTTPS the same way you do for the MCP server, and set `CHAT_PUBLIC_BASE_URL` to the resulting public URL.
 
 ### Finding your Plex token
 
@@ -158,8 +144,8 @@ The pattern below is what the author runs on Whatbox. On a homelab with systemd,
 ### Clone and install
 
 ```bash
-git clone <repo-url> ~/seedboxmcp
-cd ~/seedboxmcp
+git clone <repo-url> ~/seedbox-mcp
+cd ~/seedbox-mcp
 cp .env.example .env
 # fill in all required values
 uv sync
@@ -167,11 +153,13 @@ uv sync
 
 ### Run in the background with screen
 
+`scripts/start.sh` kills any existing sessions and launches both servers in detached `screen` sessions (`media-mcp` and `media-chat`), tailing their output to `mcp.log` and `chat.log`:
+
 ```bash
-screen -dmS media-mcp bash -c 'cd ~/seedboxmcp && scripts/run.sh 2>&1 | tee -a ~/seedboxmcp/mcp.log'
+bash scripts/start.sh
 ```
 
-Reattach: `screen -r media-mcp`. Detach: `Ctrl-A D`.
+Reattach: `screen -r media-mcp` (or `media-chat`). Detach: `Ctrl-A D`.
 
 ### Auto-restart on reboot
 
@@ -182,23 +170,22 @@ crontab -e
 Add:
 
 ```cron
-@reboot sleep 30 && screen -dmS media-mcp bash -c 'cd ~/seedboxmcp && scripts/run.sh 2>&1 | tee -a ~/seedboxmcp/mcp.log'
+@reboot sleep 30 && bash ~/seedbox-mcp/scripts/start.sh
 ```
 
 The `sleep 30` gives the host time to bring up networking before the server tries to connect.
 
-### Restart the server
+### Restart the servers
 
 ```bash
-screen -S media-mcp -X quit
-screen -dmS media-mcp bash -c 'cd ~/seedboxmcp && scripts/run.sh 2>&1 | tee -a ~/seedboxmcp/mcp.log'
+bash scripts/start.sh
 ```
+
+(The script kills the existing screen sessions before relaunching.)
 
 ### Public HTTPS front-end
 
-Front `http://127.0.0.1:17432` with HTTPS — a Whatbox managed link, a reverse proxy (Caddy / nginx), Tailscale Serve, or equivalent — and set `MCP_PUBLIC_BASE_URL` to the resulting HTTPS URL. OAuth discovery metadata is derived from this value, so it must match what your clients actually use.
-
-See the [Chat Interface](#chat-interface) section for deploying the companion chat server.
+Front `http://127.0.0.1:17432` (MCP) and `http://127.0.0.1:17433` (chat) with HTTPS — Whatbox managed links, a reverse proxy (Caddy / nginx), Tailscale Serve, or equivalent — and set `MCP_PUBLIC_BASE_URL` and `CHAT_PUBLIC_BASE_URL` to the resulting URLs. OAuth discovery metadata is derived from these values, so they must match what your clients actually use.
 
 ### Verify
 

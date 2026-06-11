@@ -3,7 +3,7 @@ set -euo pipefail
 
 # run this on the seedbox to kick off both the mcp and chat
 # crontab entry:
-# @reboot sleep 30 && bash ~/seedboxmcp/scripts/start.sh
+# @reboot sleep 30 && bash ~/seedbox-mcp/scripts/start.sh
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MCP_SESSION="media-mcp"
