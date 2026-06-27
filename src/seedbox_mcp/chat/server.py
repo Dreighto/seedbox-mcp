@@ -37,12 +37,14 @@ async def _chat_endpoint(request: Request) -> JSONResponse:
     history: list[Any] = body.get("history", [])
 
     settings: ChatSettings = request.app.state.settings
+    username = getattr(request.state, "plex_username", None)
     reply, updated_history = await chat_turn(
         message=message,
         history=history,
         settings=settings,
         mcp_client=request.app.state.mcp_client,
         anthropic_client=request.app.state.anthropic_client,
+        username=username,
     )
     return JSONResponse({"reply": reply, "history": updated_history})
 

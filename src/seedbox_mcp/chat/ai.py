@@ -82,6 +82,7 @@ async def chat_turn(
     settings: ChatSettings,
     mcp_client: Client[Any],
     anthropic_client: AsyncAnthropic,
+    username: str | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     async with mcp_client:
         raw_tools = await mcp_client.list_tools()
@@ -90,6 +91,10 @@ async def chat_turn(
     messages: list[dict[str, Any]] = list(history) + [{"role": "user", "content": message}]
 
     system_prompt = load_system_prompt(settings)
+    # Identity is for personalization only; it is authenticated but carries no privileges here,
+    # so any per-user permission gating must live in the tool layer, not this prompt line.
+    if username:
+        system_prompt += f"\n\nYou are talking to Plex user {username}."
 
     while True:
         response = await anthropic_client.messages.create(
