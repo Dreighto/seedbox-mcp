@@ -34,6 +34,7 @@ from seedbox_mcp.tools.sonarr import (
     sonarr_queue_action,
     sonarr_research_series,
 )
+from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.staleness import staleness_report
 from seedbox_mcp.tools.status import media_status
 from seedbox_mcp.tools.tautulli import tautulli_history, tautulli_user_stats, tautulli_users
@@ -511,6 +512,24 @@ def create_mcp(services: Services) -> FastMCP:
         """grouping values: daily, monthly, total."""
         return await tautulli_user_stats(services, user_id, grouping)
 
+    async def nas_backup_health_tool() -> dict[str, Any]:
+        """Checks the restic backup jobs (local daily, NAS offsite, SSD emergency)
+        via read-only systemd status — does not start/stop/restart anything.
+
+        Each entry reports status: ok, stale, failed, or never_run, plus
+        hours_since_last_run. Use this to answer "are my backups actually
+        running" instead of assuming a quiet timer means a healthy backup.
+        """
+        return await nas_backup_health()
+
+    async def nas_storage_inventory_tool(labels: list[str] | None = None) -> dict[str, Any]:
+        """Size/entry-count/freshness summary for a fixed allowlist of NAS
+        directories outside the Plex media library (music samples, production
+        kits, the general transfer/drop folder). Omit `labels` for all of them.
+        Read-only: never opens file contents, only stats them.
+        """
+        return await nas_storage_inventory(labels)
+
     register_tool(mcp, "media_status", READ_ONLY, media_status_tool)
     register_tool(mcp, "radarr_overview", READ_ONLY, radarr_overview_tool)
     register_tool(mcp, "sonarr_overview", READ_ONLY, sonarr_overview_tool)
@@ -531,6 +550,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "tautulli_history", READ_ONLY, tautulli_history_tool)
     register_tool(mcp, "tautulli_users", READ_ONLY, tautulli_users_tool)
     register_tool(mcp, "tautulli_user_stats", READ_ONLY, tautulli_user_stats_tool)
+    register_tool(mcp, "nas_backup_health", READ_ONLY, nas_backup_health_tool)
+    register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
     return mcp
 
 
