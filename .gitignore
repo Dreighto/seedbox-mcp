@@ -1,5 +1,6 @@
 .env
 .oauth_state.json
+.telegram_bot_history.json
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+from pathlib import Path
+from typing import Any
 
 import httpx
 from fastmcp import Client
@@ -12,6 +15,7 @@ from seedbox_mcp.chat.ollama_ai import (
     ESCALATION_TOOLS,
     READ_ONLY_TOOLS,
     run_agent_turn,
+    trim_history,
 )
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import TELEGRAM_API, send_message
@@ -25,6 +29,33 @@ logger = logging.getLogger("seedbox_mcp.telegram_bot")
 # originally exposed that bug).
 DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
 POLL_TIMEOUT_S = 30
+
+# Conversation history, persisted to disk — this service gets restarted
+# often during active development, and losing multi-turn context on every
+# redeploy defeats the point of adding it. Keyed by chat_id even though only
+# one chat is ever allowed today, so this doesn't need reshaping if that
+# changes. Plain JSON, not a database — this is a handful of KB for one
+# operator's conversation, not a scaling concern.
+HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_history.json"
+
+
+def _load_history() -> dict[int, list[dict[str, Any]]]:
+    if not HISTORY_PATH.exists():
+        return {}
+    try:
+        raw = json.loads(HISTORY_PATH.read_text())
+        return {int(chat_id): turns for chat_id, turns in raw.items()}
+    except (json.JSONDecodeError, ValueError, OSError):
+        logger.exception("failed to load %s, starting with empty history", HISTORY_PATH)
+        return {}
+
+
+def _save_history(history_by_chat: dict[int, list[dict[str, Any]]]) -> None:
+    try:
+        HISTORY_PATH.write_text(json.dumps({str(k): v for k, v in history_by_chat.items()}))
+    except OSError:
+        logger.exception("failed to persist history to %s", HISTORY_PATH)
+
 
 SYSTEM_PROMPT = """\
 You are the operator's NAS Ops assistant, talking to them directly over \
@@ -75,24 +106,36 @@ class BotSettings(Settings):
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
 
 
-async def _handle_message(settings: BotSettings, token: str, chat_id: int, text: str) -> None:
+async def _handle_message(
+    settings: BotSettings, token: str, chat_id: int, text: str, history: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Runs one turn and returns the updated history — on error, returns
+    `history` unchanged (a failed turn shouldn't inject partial/broken state
+    into the next one)."""
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
     try:
-        reply = await run_agent_turn(
+        reply, new_history = await run_agent_turn(
             text,
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
             model=settings.ollama_bot_model,
             allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
+            history=history,
             ollama_url=settings.ollama_url,
         )
         logger.info("reply: %r", reply)
     except Exception:
         logger.exception("agent turn failed for message: %r", text)
-        reply = "Something went wrong answering that — check the service log (journalctl -u seedbox-telegram-bot)."
+        await send_message(
+            token,
+            chat_id,
+            "Something went wrong answering that — check the service log (journalctl -u seedbox-telegram-bot).",
+        )
+        return history
     await send_message(token, chat_id, reply)
+    return trim_history(new_history)
 
 
 async def run_bot() -> None:
@@ -102,7 +145,12 @@ async def run_bot() -> None:
     token = settings.nas_ops_telegram_bot_token.get_secret_value()
     allowed_chat_id = settings.nas_ops_telegram_allowed_chat_id
 
-    logger.info("NAS Ops bot polling started (model=%s)", settings.ollama_bot_model)
+    history_by_chat = _load_history()
+    logger.info(
+        "NAS Ops bot polling started (model=%s, %d prior turns loaded)",
+        settings.ollama_bot_model,
+        len(history_by_chat.get(allowed_chat_id, [])),
+    )
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:
@@ -137,7 +185,11 @@ async def run_bot() -> None:
                 if not text:
                     continue
                 logger.info("message: %r", text)
-                await _handle_message(settings, token, allowed_chat_id, text)
+                chat_history = history_by_chat.get(allowed_chat_id, [])
+                history_by_chat[allowed_chat_id] = await _handle_message(
+                    settings, token, allowed_chat_id, text, chat_history
+                )
+                _save_history(history_by_chat)
 
 
 def main() -> None:

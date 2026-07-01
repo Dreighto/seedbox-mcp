@@ -104,6 +104,24 @@ def _parse_inline_tool_call(content: str) -> dict[str, Any] | None:
     return None
 
 
+DEFAULT_MAX_HISTORY_MESSAGES = 40
+
+
+def trim_history(
+    history: list[dict[str, Any]], max_messages: int = DEFAULT_MAX_HISTORY_MESSAGES
+) -> list[dict[str, Any]]:
+    """Keeps the most recent `max_messages` history entries, but never cuts
+    between an assistant tool_calls message and the tool results that answer
+    it — a mid-call trim leaves the model staring at an orphaned tool_calls
+    entry with no result, which reliably confuses it."""
+    if len(history) <= max_messages:
+        return history
+    cut = len(history) - max_messages
+    while cut < len(history) and history[cut].get("role") == "tool":
+        cut += 1
+    return history[cut:]
+
+
 async def run_agent_turn(
     task: str,
     *,
@@ -111,12 +129,21 @@ async def run_agent_turn(
     mcp_client: Client[Any],
     model: str,
     allowed_tools: set[str] | None = None,
+    history: list[dict[str, Any]] | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
-    server exposes. Returns the final assistant text.
+    server exposes. Returns (final assistant text, updated history).
+
+    `history`: prior conversation turns (user/assistant/tool — NOT the system
+    message, that's added fresh each call so a prompt change takes effect
+    immediately). Pass the returned history back in on the next call for the
+    same conversation; omit/None for a one-shot task with no continuity
+    (what digest.py wants — a scheduled report has no "previous turn"). The
+    caller owns persistence and trimming (trim_history helps) — this
+    function only appends.
 
     `allowed_tools`: hard allowlist by tool name. The MCP server's
     READ_ONLY/WRITE/DESTRUCTIVE annotations (see server.py) are advisory
@@ -129,9 +156,8 @@ async def run_agent_turn(
     for callers that intend full access (there are currently none — every
     caller passes an explicit set).
 
-    One-shot, not a chat session — built for the routine-digest and bot-reply
-    use cases, not an interactive multi-turn UI. Caps at MAX_TOOL_ROUNDS tool
-    round-trips so a confused model can't loop forever."""
+    Caps at MAX_TOOL_ROUNDS tool round-trips per call so a confused model
+    can't loop forever within one turn."""
     async with mcp_client:
         raw_tools = await mcp_client.list_tools()
     if allowed_tools is not None:
@@ -140,6 +166,7 @@ async def run_agent_turn(
 
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
+        *(history or []),
         {"role": "user", "content": task},
     ]
 
@@ -161,7 +188,11 @@ async def run_agent_turn(
                     tool_calls = [{"function": inline}]
 
             if not tool_calls:
-                return content
+                messages.append({"role": "assistant", "content": content})
+                # messages[0] is the system prompt, not part of persisted
+                # history — everything from index 1 on (this turn's user
+                # message onward) is what the next call should replay.
+                return content, messages[1:]
 
             messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
             for call in tool_calls:
@@ -196,4 +227,6 @@ async def run_agent_turn(
                     tool_text = f'{{"ok": false, "error_type": "invalid_call", "message": {str(exc)!r}}}'
                 messages.append({"role": "tool", "content": tool_text})
 
-        return "(stopped after max tool rounds without a final answer — task may need narrowing)"
+        timeout_note = "(stopped after max tool rounds without a final answer — task may need narrowing)"
+        messages.append({"role": "assistant", "content": timeout_note})
+        return timeout_note, messages[1:]

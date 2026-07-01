@@ -86,7 +86,9 @@ class DigestSettings(Settings):
 async def run_digest(task: str, model: str | None = None) -> str:
     settings = DigestSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
-    return await run_agent_turn(
+    # No history — each scheduled run is a fresh report, not a continuation
+    # of yesterday's. Multi-turn memory is a telegram_bot.py concept.
+    text, _history = await run_agent_turn(
         task,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
@@ -94,6 +96,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
         allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
         ollama_url=settings.ollama_url,
     )
+    return text
 
 
 DEFAULT_TASK = (
