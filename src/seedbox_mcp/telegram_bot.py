@@ -36,23 +36,48 @@ POLL_TIMEOUT_S = 30
 # one chat is ever allowed today, so this doesn't need reshaping if that
 # changes. Plain JSON, not a database — this is a handful of KB for one
 # operator's conversation, not a scaling concern.
+#
+# Per-chat value is {"history": [...], "pending_action": {...} | null} —
+# pending_action travels alongside history because it's the same kind of
+# per-conversation state (see ollama_ai.run_agent_turn's pending_action
+# param): the single action-tool preview the bot is currently allowed to
+# execute on a matching confirm=true. Losing it on restart would just mean
+# an in-flight "yes" fails closed and asks for a fresh preview — an
+# ok-either-way default rather than a real problem.
 HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_history.json"
 
 
-def _load_history() -> dict[int, list[dict[str, Any]]]:
+class ChatState(dict[str, Any]):
+    """{"history": list[dict], "pending_action": dict | None} — a thin alias
+    so callers don't have to spell out the shape every time."""
+
+
+def _load_chat_states() -> dict[int, ChatState]:
     if not HISTORY_PATH.exists():
         return {}
     try:
         raw = json.loads(HISTORY_PATH.read_text())
-        return {int(chat_id): turns for chat_id, turns in raw.items()}
-    except (json.JSONDecodeError, ValueError, OSError):
+    except (json.JSONDecodeError, OSError):
         logger.exception("failed to load %s, starting with empty history", HISTORY_PATH)
         return {}
+    states: dict[int, ChatState] = {}
+    for chat_id, value in raw.items():
+        try:
+            key = int(chat_id)
+        except ValueError:
+            continue
+        if isinstance(value, list):
+            # Pre-pending-action-gate format — a bare history list. Treat as
+            # no pending action rather than guessing at one from old data.
+            states[key] = ChatState(history=value, pending_action=None)
+        elif isinstance(value, dict):
+            states[key] = ChatState(history=value.get("history", []), pending_action=value.get("pending_action"))
+    return states
 
 
-def _save_history(history_by_chat: dict[int, list[dict[str, Any]]]) -> None:
+def _save_chat_states(states: dict[int, ChatState]) -> None:
     try:
-        HISTORY_PATH.write_text(json.dumps({str(k): v for k, v in history_by_chat.items()}))
+        HISTORY_PATH.write_text(json.dumps({str(k): v for k, v in states.items()}))
     except OSError:
         logger.exception("failed to persist history to %s", HISTORY_PATH)
 
@@ -80,12 +105,24 @@ low-stakes changes: nasdoom_queue_command / nasdoom_queue_item_command \
 (fix a mismatched Plex item). Each takes confirm=false|true — ALWAYS call \
 with confirm=false first, it returns the current state and exactly what \
 would change without writing anything. If that preview looks right, call \
-again with confirm=true. Use these when the operator asks directly ("pause \
-the queue") or when it's the obvious next step in the conversation — you \
-don't need to ask the operator's permission for something this reversible \
-(the confirm=false preview step already covers that), but say plainly what \
-you did. If the preview shows something unexpected (wrong item matched, \
-found=false), stop and ask the operator instead of forcing confirm=true.
+again with confirm=true right away, in direct response to the operator \
+actually confirming that specific thing. Use these when the operator asks \
+directly ("pause the queue") or when it's the obvious next step in the \
+conversation — you don't need to ask the operator's permission for \
+something this reversible (the confirm=false preview step already covers \
+that), but say plainly what you did. If the preview shows something \
+unexpected (wrong item matched, found=false), stop and ask the operator \
+instead of forcing confirm=true.
+
+Important: confirm=true only works if it matches a preview you just ran — \
+the harness rejects it otherwise (error_type "not_permitted"), so don't \
+invent a confirm=true call because a message sounds like agreement ("yes", \
+"go ahead", "sure") when you haven't actually proposed anything specific to \
+confirm, and don't treat an unrelated question (like "what did you just \
+do?") as a reason to fire one off. If a "yes" doesn't clearly map to one \
+specific thing you just previewed, ask what it's confirming instead of \
+guessing. If you get the not_permitted rejection, that means there's \
+nothing live to confirm — tell the operator, don't retry blindly.
 
 For non-video content — music samples/kits, software, games, books, none \
 of which have an arr or a TMDB catalog — use nasdoom_find(query, scope) to \
@@ -113,7 +150,24 @@ For anything broken that's outside these tools — a failed backup, a service \
 that's down, config drift — call escalate_to_worker with a clear \
 description, tell the operator you escalated it and why, then move on. \
 Don't try to fix system-level things yourself; you don't have the tools \
-for that, and pretending otherwise wastes their time.
+for that, and pretending otherwise wastes their time. This includes when \
+the operator tells you something is broken but your own read-only check \
+says it's fine — don't just trust the tool and dismiss what they said; a \
+tool reporting "ok" doesn't mean the operator is wrong, it might mean the \
+tool isn't seeing what they're seeing. Say the discrepancy out loud and \
+escalate it for a closer look rather than resolving the conflict yourself. \
+And never hand the operator raw commands to run themselves (journalctl, \
+systemctl, anything shell-level) as your answer — that's the exact "you \
+don't have the tools for that" situation above; escalate instead of \
+outsourcing the investigation back to them.
+
+When you're recommending what to do about something outside your tools' \
+reach — especially deleting or removing anything — never suggest a manual, \
+ungated path (removing files/folders directly, running a script, editing \
+config by hand) even as a "here's how you'd do it yourself" aside. If \
+there's no tool-gated way to do it, say that plainly and either escalate it \
+or leave it for the operator to decide how, but don't hand them an \
+unaudited shortcut around the same safety rails your own tools have.
 
 This is a live conversation with the one person who runs this NAS, not a \
 scheduled report — answer their actual question, don't pad it into a \
@@ -133,22 +187,23 @@ class BotSettings(Settings):
 
 
 async def _handle_message(
-    settings: BotSettings, token: str, chat_id: int, text: str, history: list[dict[str, Any]]
-) -> list[dict[str, Any]]:
-    """Runs one turn and returns the updated history — on error, returns
-    `history` unchanged (a failed turn shouldn't inject partial/broken state
+    settings: BotSettings, token: str, chat_id: int, text: str, state: ChatState
+) -> ChatState:
+    """Runs one turn and returns the updated chat state — on error, returns
+    `state` unchanged (a failed turn shouldn't inject partial/broken state
     into the next one)."""
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
     try:
-        reply, new_history = await run_agent_turn(
+        reply, new_history, new_pending_action = await run_agent_turn(
             text,
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
             model=settings.ollama_bot_model,
             allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
-            history=history,
+            history=state.get("history", []),
+            pending_action=state.get("pending_action"),
             ollama_url=settings.ollama_url,
         )
         logger.info("reply: %r", reply)
@@ -159,9 +214,9 @@ async def _handle_message(
             chat_id,
             "Something went wrong answering that — check the service log (journalctl -u seedbox-telegram-bot).",
         )
-        return history
+        return state
     await send_message(token, chat_id, reply)
-    return trim_history(new_history)
+    return ChatState(history=trim_history(new_history), pending_action=new_pending_action)
 
 
 async def run_bot() -> None:
@@ -171,11 +226,11 @@ async def run_bot() -> None:
     token = settings.nas_ops_telegram_bot_token.get_secret_value()
     allowed_chat_id = settings.nas_ops_telegram_allowed_chat_id
 
-    history_by_chat = _load_history()
+    chat_states = _load_chat_states()
     logger.info(
         "NAS Ops bot polling started (model=%s, %d prior turns loaded)",
         settings.ollama_bot_model,
-        len(history_by_chat.get(allowed_chat_id, [])),
+        len(chat_states.get(allowed_chat_id, ChatState(history=[])).get("history", [])),
     )
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
@@ -211,11 +266,9 @@ async def run_bot() -> None:
                 if not text:
                     continue
                 logger.info("message: %r", text)
-                chat_history = history_by_chat.get(allowed_chat_id, [])
-                history_by_chat[allowed_chat_id] = await _handle_message(
-                    settings, token, allowed_chat_id, text, chat_history
-                )
-                _save_history(history_by_chat)
+                state = chat_states.get(allowed_chat_id, ChatState(history=[], pending_action=None))
+                chat_states[allowed_chat_id] = await _handle_message(settings, token, allowed_chat_id, text, state)
+                _save_chat_states(chat_states)
 
 
 def main() -> None:

@@ -195,7 +195,10 @@ def create_mcp(services: Services) -> FastMCP:
         year: int | None = None,
         country: str | None = None,
     ) -> dict[str, Any]:
-        """Search for movies, TV series, or Plex items. Returns tmdb_id/tvdb_id for use with add tools.
+        """Search for movies, TV series, or Plex items ONLY. Returns tmdb_id/tvdb_id for use
+        with add tools. For music (albums, sample packs, artists) do NOT use this tool at all,
+        including the genre filter — there is no music catalog here. Use nasdoom_find(scope='music')
+        instead.
 
         Either query or at least one attribute filter must be provided. They can be combined.
 
@@ -575,19 +578,22 @@ def create_mcp(services: Services) -> FastMCP:
         staleness_report/media_status can't give on their own."""
         return await jellyseerr_overview(services, limit)
 
-    async def nasdoom_health_tool() -> dict[str, Any]:
+    async def nasdoom_health_tool(nocache: bool = True) -> dict[str, Any]:
         """NASDOOM BFF's own service rollup — reachability + latency for all
         8 upstreams (Plex/Sonarr/Radarr/Prowlarr/SABnzbd/nzbget/Tautulli/
         Jellyseerr) in one call. Prefer this over calling media_status +
         prowlarr_overview + sabnzbd_overview + jellyseerr_overview
-        separately when you just need a quick "is everything up" check."""
+        separately when you just need a quick "is everything up" check.
+        nocache is accepted but has no effect — this call is always live,
+        never cached, so there's nothing to bypass."""
         return await nasdoom_health(services)
 
-    async def nasdoom_queue_tool() -> dict[str, Any]:
+    async def nasdoom_queue_tool(nocache: bool = True) -> dict[str, Any]:
         """NASDOOM's unified download/import queue — merges SABnzbd and the
         arr import queues into one view with global speed/pause state and
         per-item progress. Prefer this over sabnzbd_overview alone; it also
-        covers items already past SAB and sitting in Radarr/Sonarr import."""
+        covers items already past SAB and sitting in Radarr/Sonarr import.
+        nocache is accepted but has no effect — this call is always live."""
         return await nasdoom_queue(services)
 
     async def nasdoom_omni_search_tool(query: str) -> dict[str, Any]:
@@ -606,12 +612,17 @@ def create_mcp(services: Services) -> FastMCP:
         anything request-shaped; it has friendlier state labels."""
         return await nasdoom_requests_overview(services, filter, take)
 
-    async def nasdoom_control_tool() -> dict[str, Any]:
+    async def nasdoom_control_tool(nocache: bool = True) -> dict[str, Any]:
         """Operator status: quality-profile/root-folder config for both arrs,
         and storage with a real denominator (percentFull, sourced from arr
         diskspace on the media pool — not a raw `du`). Prefer this over
         nas_storage_inventory for "how full is the media pool"; that tool is
-        for the non-media watched dirs (Music/samples/Transfer) only."""
+        for the non-media watched dirs (Music/samples/Transfer) only.
+        IMPORTANT: this tool alone does NOT answer "how much free space is on
+        the NAS overall" — it's media-pool-only. For a whole-NAS/overall
+        question, call this AND nas_storage_inventory and combine both;
+        don't answer an "overall" question with media-pool-only numbers.
+        nocache is accepted but has no effect — this call is always live."""
         return await nasdoom_control(services)
 
     async def nasdoom_queue_command_tool(

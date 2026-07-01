@@ -66,7 +66,13 @@ For anything you find that's broken but outside these tools' reach — a \
 failed backup, a disabled indexer, a service that's down, config drift — \
 call escalate_to_worker with a clear description of what you found. That \
 hands it to a full worker with real system access. Say in the report that \
-you escalated it and why; don't just silently note the problem and move on.
+you escalated it and why; don't just silently note the problem and move on. \
+When you're reporting something that could be cleaned up (stale media, \
+disk space) but you have no tool to act on it, describe the problem and \
+either escalate it or leave it for the operator's own judgment — don't \
+suggest a manual, ungated path (deleting files/folders directly, editing \
+config by hand) as the fix, even as an aside. That's outsourcing an \
+unaudited shortcut around the same safety rails your own tools have.
 
 Write a short plain-English digest:
 - Lead with anything that needs the operator's attention, including \
@@ -93,7 +99,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     # No history — each scheduled run is a fresh report, not a continuation
     # of yesterday's. Multi-turn memory is a telegram_bot.py concept.
-    text, _history = await run_agent_turn(
+    text, _history, _pending_action = await run_agent_turn(
         task,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -96,13 +97,27 @@ def extract_tool_text(result: Any) -> str:
     return "\n".join(b.text for b in result.content if hasattr(b, "text"))
 
 
+# Alternate key names observed for the "tool name" field across inline-JSON
+# shapes — models drift on this ("name" vs "method" vs "tool" vs "function").
+_INLINE_NAME_KEYS = ("name", "method", "tool", "function")
+
+
 def _parse_inline_tool_call(content: str) -> dict[str, Any] | None:
     """Some Ollama models (notably smaller/locally-tuned ones) emit a tool
     call as inline JSON in message content instead of structured tool_calls.
     Mirrors the same fallback the companion voice path already needed for
     companion-v1-voice — keep this even though the cloud models tested so far
     return proper structured tool_calls, since a model swap could reintroduce
-    the quirk silently."""
+    the quirk silently.
+
+    Handles both the flat {"name": ..., "arguments": ...} shape and a nested
+    {"content": {"method": ..., "arguments": ...}} shape observed live from
+    gpt-oss:20b-cloud — a model that decided to describe a tool call as
+    formatted JSON prose instead of either calling it for real or writing a
+    plain-English answer. Anything JSON-shaped that looks like it was
+    *trying* to be a tool call but doesn't match either shape gets logged
+    (not silently dropped) so this failure mode is visible instead of only
+    surfacing as a live "claimed it did something, did nothing" trap."""
     start = content.find("{")
     if start == -1:
         return None
@@ -110,9 +125,43 @@ def _parse_inline_tool_call(content: str) -> dict[str, Any] | None:
         candidate = json.loads(content[start:])
     except json.JSONDecodeError:
         return None
-    if isinstance(candidate, dict) and "name" in candidate and "arguments" in candidate:
-        return candidate
+    if not isinstance(candidate, dict):
+        return None
+
+    def _extract(d: dict[str, Any]) -> dict[str, Any] | None:
+        name_key = next((k for k in _INLINE_NAME_KEYS if k in d), None)
+        if name_key is not None and "arguments" in d:
+            return {"name": d[name_key], "arguments": d["arguments"]}
+        return None
+
+    direct = _extract(candidate)
+    if direct is not None:
+        return direct
+
+    nested = candidate.get("content")
+    if isinstance(nested, dict):
+        via_nested = _extract(nested)
+        if via_nested is not None:
+            return via_nested
+
+    logger.warning(
+        "ollama_ai: assistant content looked JSON-shaped but didn't match any known "
+        "inline-tool-call pattern — treating as plain text: %.300s",
+        content,
+    )
     return None
+
+
+# How long a previewed (confirm=false) action stays eligible to be confirmed.
+# Exists so a "yes" minutes/hours later in an unrelated part of the
+# conversation can't reach back and execute a stale, possibly-no-longer-
+# accurate proposal — the operator would reasonably expect a confirmation
+# that far removed from its preview to require a fresh look first.
+PENDING_ACTION_TTL_S = 600.0
+
+
+def _args_without_confirm(args: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in args.items() if k != "confirm"}
 
 
 DEFAULT_MAX_HISTORY_MESSAGES = 40
@@ -143,12 +192,14 @@ async def run_agent_turn(
     action_tools: set[str] | None = None,
     escalation_tools: set[str] | None = None,
     history: list[dict[str, Any]] | None = None,
+    pending_action: dict[str, Any] | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
-    server exposes. Returns (final assistant text, updated history).
+    server exposes. Returns (final assistant text, updated history, updated
+    pending_action).
 
     `history`: prior conversation turns (user/assistant/tool — NOT the system
     message, that's added fresh each call so a prompt change takes effect
@@ -177,6 +228,22 @@ async def run_agent_turn(
     independent of the model's own judgment, so a confused model looping on
     a real write can't just talk its way past a prompt instruction. See
     action_audit.py.
+
+    `pending_action`: the single {tool, args, ts} the model is currently
+    allowed to confirm — set by the most recent successful confirm=false
+    preview of an ACTION_TOOLS call, cleared once confirmed (or superseded by
+    a newer preview). This is the actual authorization gate for confirm=true:
+    a confirm=true call only executes if its (tool, args-minus-confirm)
+    matches what's pending and the preview isn't older than
+    PENDING_ACTION_TTL_S. This exists because the model regenerating tool
+    calls from free-form conversation history is not itself an authorization
+    mechanism — live testing found a bare "yes" fabricating a pending action
+    that was never proposed, and a pure meta-question ("what did you just
+    do?") firing a real confirm=true write and then narrating it as a
+    deliberate user-approved sequence. Server-tracked state, not the model's
+    own judgment, is what makes confirm=true mean something. Persist the
+    returned value the same way `history` is persisted — it's per-conversation
+    state, not global.
 
     Caps at MAX_TOOL_ROUNDS tool round-trips per call so a confused model
     can't loop forever within one turn."""
@@ -216,7 +283,7 @@ async def run_agent_turn(
                 # messages[0] is the system prompt, not part of persisted
                 # history — everything from index 1 on (this turn's user
                 # message onward) is what the next call should replay.
-                return content, messages[1:]
+                return content, messages[1:], pending_action
 
             messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
             for call in tool_calls:
@@ -240,13 +307,58 @@ async def run_agent_turn(
                     )
                     continue
 
+                is_action_tool = name in action_tools
+                wants_confirm = is_action_tool and bool(args.get("confirm"))
+
+                # The pending-action gate: a confirm=true call only counts as
+                # authorized if it matches the single preview the harness is
+                # currently holding (same tool, same args minus confirm,
+                # previewed within the TTL). Without this, "was this
+                # authorized" was entirely the model's own free-form
+                # reinterpretation of conversation history on every turn —
+                # live testing found that let a bare "yes" fabricate an
+                # action nothing proposed, and a pure meta-question fire a
+                # real write the model then narrated as deliberately
+                # user-approved. This is what actually makes confirm=true
+                # mean something, not just a convention the model follows.
+                if wants_confirm:
+                    normalized = _args_without_confirm(args)
+                    matches_pending = (
+                        pending_action is not None
+                        and pending_action.get("tool") == name
+                        and pending_action.get("args") == normalized
+                        and (time.time() - pending_action.get("ts", 0)) <= PENDING_ACTION_TTL_S
+                    )
+                    if not matches_pending:
+                        logger.error(
+                            "ollama_ai BLOCKED confirm=true with no matching pending preview: %s(%s)",
+                            name,
+                            args,
+                        )
+                        record_action(name, args, dry_run=True, outcome="blocked_no_pending_match")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": (
+                                    '{"ok": false, "error_type": "not_permitted", "message": '
+                                    '"No matching preview is currently pending for this exact action. '
+                                    "Call with confirm=false first to preview it, then confirm=true "
+                                    'right after — a confirm=true out of nowhere is not authorized."}'
+                                ),
+                            }
+                        )
+                        continue
+                    # Matched and about to execute for real — consume it so
+                    # the same proposal can't be confirmed twice.
+                    pending_action = None
+
                 # A "real" action = an escalation (no dry-run concept, it
                 # always dispatches a worker) or an ACTION_TOOLS call with
-                # confirm=true (a dry-run preview doesn't write anything, so
-                # it doesn't count against the breaker or get logged as one).
+                # confirm=true that just cleared the pending-action gate
+                # above (a dry-run preview doesn't write anything, so it
+                # doesn't count against the breaker or get logged as one).
                 is_escalation = name in escalation_tools
-                is_confirmed_action = name in action_tools and bool(args.get("confirm"))
-                is_real_action = is_escalation or is_confirmed_action
+                is_real_action = is_escalation or wants_confirm
 
                 if is_real_action and rate_limit_exceeded():
                     logger.error("ollama_ai RATE LIMITED: %s(%s)", name, args)
@@ -269,6 +381,16 @@ async def run_agent_turn(
                     tool_text = extract_tool_text(result)
                     if is_real_action:
                         record_action(name, args, dry_run=False, outcome="ok")
+                    elif is_action_tool:
+                        # A successful confirm=false preview — this becomes
+                        # the one thing a subsequent confirm=true is allowed
+                        # to execute. Overwrites any prior pending proposal;
+                        # only one can be live at a time.
+                        pending_action = {
+                            "tool": name,
+                            "args": _args_without_confirm(args),
+                            "ts": time.time(),
+                        }
                 except ToolError as exc:
                     # A model-invented bad arg shouldn't kill the whole run —
                     # feed the error back so it can self-correct, same as a
@@ -281,4 +403,4 @@ async def run_agent_turn(
 
         timeout_note = "(stopped after max tool rounds without a final answer — task may need narrowing)"
         messages.append({"role": "assistant", "content": timeout_note})
-        return timeout_note, messages[1:]
+        return timeout_note, messages[1:], pending_action
