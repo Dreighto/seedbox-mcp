@@ -533,7 +533,15 @@ def create_mcp(services: Services) -> FastMCP:
 
     async def prowlarr_overview_tool() -> dict[str, Any]:
         """Prowlarr indexer health: reachability, per-indexer enabled state,
-        which indexers (if any) are disabled/failing."""
+        which indexers (if any) are disabled/failing.
+
+        Note on the `health` array: an "IndexerVIPExpiredCheck" entry means a
+        premium VIP perk (extra API allowance/priority) lapsed on that one
+        indexer, NOT that the indexer stopped working — check `enable` on the
+        matching indexer before treating it as something the operator needs
+        to act on. Only flag it as attention-worthy if the indexer is also
+        disabled or actually failing searches.
+        """
         return await prowlarr_overview(services)
 
     async def sabnzbd_overview_tool() -> dict[str, Any]:
