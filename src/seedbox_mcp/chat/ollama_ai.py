@@ -41,6 +41,7 @@ READ_ONLY_TOOLS: set[str] = {
     "tautulli_user_stats",
     "nas_backup_health",
     "nas_storage_inventory",
+    "nas_internet_speed_test",
     "prowlarr_overview",
     "sabnzbd_overview",
     "jellyseerr_overview",

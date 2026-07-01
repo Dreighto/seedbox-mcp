@@ -18,6 +18,7 @@ from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
 from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
+from seedbox_mcp.tools.nas_network import nas_internet_speed_test
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.nasdoom import (
     nasdoom_control,
@@ -582,6 +583,15 @@ def create_mcp(services: Services) -> FastMCP:
         """
         return await nas_storage_inventory(labels)
 
+    async def nas_internet_speed_test_tool() -> dict[str, Any]:
+        """Runs a real speed test from the NAS itself (SSH + speedtest-cli) —
+        this is the NAS's own internet connection, NOT the machine this MCP
+        server runs on. Takes ~5-10s; use this when asked "what are my NAS's
+        internet speeds" or similar — there is no cached/estimated substitute,
+        every call runs a fresh real test and consumes real bandwidth (a few
+        hundred MB), so don't call it repeatedly in one conversation."""
+        return await nas_internet_speed_test()
+
     async def prowlarr_overview_tool() -> dict[str, Any]:
         """Prowlarr indexer health: reachability, per-indexer enabled state,
         which indexers (if any) are disabled/failing.
@@ -808,6 +818,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "tautulli_user_stats", READ_ONLY, tautulli_user_stats_tool)
     register_tool(mcp, "nas_backup_health", READ_ONLY, nas_backup_health_tool)
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
+    register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
     register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)
     register_tool(mcp, "jellyseerr_overview", READ_ONLY, jellyseerr_overview_tool)
