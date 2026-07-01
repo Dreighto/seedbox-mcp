@@ -6,12 +6,14 @@ import json
 import logging
 from typing import Any
 
+import httpx
 from fastmcp import Client
 
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, READ_ONLY_TOOLS, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, READ_ONLY_TOOLS, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import send_message
+from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -112,6 +114,11 @@ else: {NO_ALERT_SENTINEL}
 Do not pad a real "all clear" into any other text, and do not use this \
 sentinel if you actually found or fixed something — that always gets a \
 real report instead, even if what you fixed was minor.
+
+Formatting (when you do write a report): this renders in Telegram, which \
+doesn't support markdown tables in any mode and only single *asterisks* \
+make bold text (double **asterisks** show up as literal asterisks). Use \
+short "Label: value" lines instead of a table.
 """
 
 
@@ -122,6 +129,28 @@ class MonitorSettings(Settings):
     @property
     def mcp_url(self) -> str:
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
+
+
+async def _keep_interactive_model_warm(ollama_url: str) -> None:
+    """Trivial no-tools ping to the INTERACTIVE bot's model (not this
+    monitor's own, bigger one) with a long keep_alive — piggybacks on this
+    cycle's existing 30-min cadence so gpt-oss:20b-cloud stays resident
+    through normal operating hours instead of only getting warmed by
+    whenever the operator happens to message next. Best-effort: a failure
+    here shouldn't fail the actual monitor cycle."""
+    try:
+        async with httpx.AsyncClient(base_url=ollama_url, timeout=30.0) as http:
+            await http.post(
+                "/api/chat",
+                json={
+                    "model": DEFAULT_BOT_MODEL,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "stream": False,
+                    "keep_alive": KEEP_ALIVE,
+                },
+            )
+    except httpx.HTTPError:
+        logger.warning("keep-warm ping for %s failed (non-fatal)", DEFAULT_BOT_MODEL, exc_info=True)
 
 
 async def _deterministic_queue_resume(mcp_client: Client[Any]) -> str | None:
@@ -164,6 +193,7 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     settings = MonitorSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
 
+    await _keep_interactive_model_warm(settings.ollama_url)
     queue_fix_note = await _deterministic_queue_resume(mcp_client)
 
     # Spelled out as an explicit checklist in the TASK message, not just

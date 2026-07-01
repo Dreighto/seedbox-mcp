@@ -22,6 +22,18 @@ logger = logging.getLogger("seedbox_mcp.chat.ollama_ai")
 # cloud inference is reached through `ollama signin` + the local daemon, not
 # a bearer token to the public API).
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+
+# Every call previously omitted keep_alive, so Ollama Cloud applied whatever
+# its own default eviction window is — operator reported ~4-5 min cold-start
+# latency on the first message after an idle gap, consistent with the cloud
+# side unloading the model and needing to reload it. Explicitly requesting a
+# longer residency on every call means a normal gap between messages
+# shouldn't trigger a reload; this can only help (never worse than the
+# implicit default) regardless of what that default actually was — Ollama
+# doesn't expose cloud-side model residency for inspection the way local
+# `/api/ps` does for on-box models, so there was nothing to directly verify
+# the prior default against.
+KEEP_ALIVE = "30m"
 MAX_TOOL_ROUNDS = 6
 
 # The NAS-ops harness's current capability boundary (digest + telegram_bot).
@@ -359,7 +371,13 @@ async def run_agent_turn(
         for _round in range(max_tool_rounds):
             resp = await http.post(
                 "/api/chat",
-                json={"model": model, "messages": messages, "tools": tools, "stream": False},
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "tools": tools,
+                    "stream": False,
+                    "keep_alive": KEEP_ALIVE,
+                },
             )
             resp.raise_for_status()
             body = resp.json()

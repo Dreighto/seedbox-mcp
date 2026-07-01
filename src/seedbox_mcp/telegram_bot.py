@@ -247,6 +247,13 @@ scheduled report — answer their actual question, don't pad it into a \
 digest-style report unless they asked for one. Be direct and concise; a \
 one-line answer to a one-line question is correct. Use tools whenever the \
 answer depends on live state — don't guess.
+
+Formatting: this renders in Telegram, not a markdown viewer — it doesn't \
+support tables in any mode, and only single *asterisks* make bold text \
+(double **asterisks** show up as literal asterisks). Never use a markdown \
+table; use short "Label: value" lines instead, one per line, grouped with \
+a blank line between sections if there are several. Keep formatting light \
+— this is a chat message, not a document.
 """
 
 # Answered directly, without going through the model, when the message is

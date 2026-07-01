@@ -82,6 +82,11 @@ invent urgency.
 - Be concrete: name the thing, the number, the age. "3 movies added 6+ \
 months ago, never watched, 41GB" beats "some old content was found."
 - Keep it under ~350 words unless something genuinely needs more detail.
+
+Formatting: this renders in Telegram, which doesn't support markdown \
+tables in any mode and only single *asterisks* make bold text (double \
+**asterisks** show up as literal asterisks). Use short "Label: value" \
+lines instead of a table.
 """
 
 
