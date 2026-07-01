@@ -609,28 +609,42 @@ def create_mcp(services: Services) -> FastMCP:
         return await nasdoom_control(services)
 
     async def nasdoom_queue_command_tool(
-        action: str, value: float | None = None, unit: str | None = None
+        action: str, value: float | None = None, unit: str | None = None, confirm: bool = False
     ) -> dict[str, Any]:
         """Global download-queue control. action: pause|resume|speedcap.
         For speedcap, value is required (0 = unlimited) and unit is
         'percent' or 'mbps'. Reversible — pausing/resuming/re-capping can
-        always be undone with another call."""
-        return await nasdoom_queue_command(services, action, value, unit)
+        always be undone with another call.
 
-    async def nasdoom_queue_item_command_tool(item_id: str, action: str, value: float | None = None) -> dict[str, Any]:
+        Two-step: call with confirm=false first (default) — returns the
+        current queue state plus what would change, no write happens. Only
+        call again with confirm=true once you've decided this is right."""
+        return await nasdoom_queue_command(services, action, value, unit, confirm)
+
+    async def nasdoom_queue_item_command_tool(
+        item_id: str, action: str, value: float | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
         """Per-item download-queue control. Get item_id from nasdoom_queue.
         action: pause|resume|cancel|priority (value=new priority, item type
         dependent). SABnzbd items take all four; arr-import items only take
         cancel (others 422 unsupported_on_import_lane — that's expected, not
-        a bug, explain it plainly if it happens)."""
-        return await nasdoom_queue_item_command(services, item_id, action, value)
+        a bug, explain it plainly if it happens).
 
-    async def nasdoom_requests_action_tool(request_id: str, action: str) -> dict[str, Any]:
+        Two-step: confirm=false (default) returns the matched item's current
+        state and what would change, no write happens. confirm=true executes."""
+        return await nasdoom_queue_item_command(services, item_id, action, value, confirm)
+
+    async def nasdoom_requests_action_tool(request_id: str, action: str, confirm: bool = False) -> dict[str, Any]:
         """Approve or decline a friend's Jellyseerr request. Get request_id
         from nasdoom_requests_overview. action: approve|decline. A status
         change, not destructive — declining doesn't delete anything and can
-        be reversed by approving later if the requester is asked again."""
-        return await nasdoom_requests_action(services, request_id, action)
+        be reversed by approving later if the requester is asked again.
+
+        Two-step: confirm=false (default) looks up the actual request (title,
+        requester) so you can verify the ID is right before acting — request_
+        found=false means the ID doesn't match anything, don't proceed.
+        confirm=true executes."""
+        return await nasdoom_requests_action(services, request_id, action, confirm)
 
     async def nasdoom_match_search_tool(rating_key: str, query: str | None = None) -> dict[str, Any]:
         """Find Plex match candidates for a mismatched library item (what
@@ -639,11 +653,16 @@ def create_mcp(services: Services) -> FastMCP:
         Optional query does a typed title search for the candidate list."""
         return await nasdoom_match_search(services, rating_key, query)
 
-    async def nasdoom_match_apply_tool(rating_key: str, guid: str, name: str) -> dict[str, Any]:
+    async def nasdoom_match_apply_tool(
+        rating_key: str, guid: str, name: str, confirm: bool = False
+    ) -> dict[str, Any]:
         """Apply a chosen match from nasdoom_match_search — Plex re-matches
         the item and refreshes its metadata. guid/name come from the
-        candidate you're applying, not free text."""
-        return await nasdoom_match_apply(services, rating_key, guid, name)
+        candidate you're applying, not free text.
+
+        Two-step: confirm=false (default) echoes back what would be applied,
+        no write happens. confirm=true executes."""
+        return await nasdoom_match_apply(services, rating_key, guid, name, confirm)
 
     async def escalate_to_worker_tool(
         issue: str, worker: str = DEFAULT_ESCALATION_WORKER, target_repo: str = DEFAULT_TARGET_REPO

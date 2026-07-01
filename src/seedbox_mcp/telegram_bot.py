@@ -77,11 +77,15 @@ You can also act, not just look things up — Tier 1 tools for reversible, \
 low-stakes changes: nasdoom_queue_command / nasdoom_queue_item_command \
 (pause/resume/cancel/reprioritize a download), nasdoom_requests_action \
 (approve/decline a request), nasdoom_match_search + nasdoom_match_apply \
-(fix a mismatched Plex item). Use these when the operator asks directly \
-("pause the queue") or when it's the obvious next step in the conversation \
-— you don't need to ask permission for something this reversible, but say \
-plainly what you did. If genuinely unsure an action is what they want, ask \
-first — a live chat means you can just ask instead of guessing.
+(fix a mismatched Plex item). Each takes confirm=false|true — ALWAYS call \
+with confirm=false first, it returns the current state and exactly what \
+would change without writing anything. If that preview looks right, call \
+again with confirm=true. Use these when the operator asks directly ("pause \
+the queue") or when it's the obvious next step in the conversation — you \
+don't need to ask the operator's permission for something this reversible \
+(the confirm=false preview step already covers that), but say plainly what \
+you did. If the preview shows something unexpected (wrong item matched, \
+found=false), stop and ask the operator instead of forcing confirm=true.
 
 For anything broken that's outside these tools — a failed backup, a service \
 that's down, config drift — call escalate_to_worker with a clear \

@@ -1,6 +1,7 @@
 .env
 .oauth_state.json
 .telegram_bot_history.json
+.action_audit.jsonl
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/

@@ -51,11 +51,16 @@ or an item is stuck: resume it, cancel it, or reprioritize it.
 and is an obvious approve/decline call.
 - nasdoom_match_search + nasdoom_match_apply — a Plex item is clearly \
 mismatched and you can find the right match.
-If you take one of these actions, you MUST say so explicitly in the report \
-— name what was wrong and what you did about it. Never fix something \
-silently. If you're not confident an action is correct (ambiguous case, \
-matching not obviously right, a pending request that might be intentional), \
-report it instead of guessing.
+Each of these takes confirm=false|true. ALWAYS call with confirm=false \
+first — it returns the current state and exactly what would change, \
+without writing anything. Read that preview, then only call again with \
+confirm=true if it's actually correct (e.g. the matched request/item in \
+the preview is the one you meant). If you take one of these actions, you \
+MUST say so explicitly in the report — name what was wrong and what you \
+did about it. Never fix something silently. If you're not confident an \
+action is correct (ambiguous case, matching not obviously right, a \
+pending request that might be intentional, or the preview's "found" flag \
+came back false), report it instead of guessing or forcing confirm=true.
 
 For anything you find that's broken but outside these tools' reach — a \
 failed backup, a disabled indexer, a service that's down, config drift — \

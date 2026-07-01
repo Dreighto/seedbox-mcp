@@ -64,7 +64,11 @@ VALID_REQUEST_ACTIONS = {"approve", "decline"}
 
 
 async def nasdoom_queue_command(
-    services: Services, action: str, value: float | None = None, unit: str | None = None
+    services: Services,
+    action: str,
+    value: float | None = None,
+    unit: str | None = None,
+    confirm: bool = False,
 ) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
@@ -78,13 +82,18 @@ async def nasdoom_queue_command(
             body["value"] = value
         if unit is not None:
             body["unit"] = unit
-        return ToolResponse.success(await services.nasdoom.post("/v1/queue/command", body))
+        if not confirm:
+            current = await services.nasdoom.get("/v1/queue")
+            return ToolResponse.success(
+                {"dry_run": True, "current_state": current.get("global"), "would_apply": body}
+            )
+        return ToolResponse.success({"dry_run": False, **await services.nasdoom.post("/v1/queue/command", body)})
 
     return await safe_tool(run)
 
 
 async def nasdoom_queue_item_command(
-    services: Services, item_id: str, action: str, value: float | None = None
+    services: Services, item_id: str, action: str, value: float | None = None, confirm: bool = False
 ) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
@@ -96,18 +105,53 @@ async def nasdoom_queue_item_command(
         body: dict[str, Any] = {"action": action}
         if value is not None:
             body["value"] = value
-        return ToolResponse.success(await services.nasdoom.post(f"/v1/queue/{item_id}/command", body))
+        if not confirm:
+            queue = await services.nasdoom.get("/v1/queue")
+            items = queue.get("items", []) if isinstance(queue, dict) else []
+            current_item = next((i for i in items if i.get("id") == item_id), None)
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "current_item": current_item,
+                    "item_found": current_item is not None,
+                    "would_apply": {"item_id": item_id, **body},
+                }
+            )
+        return ToolResponse.success(
+            {"dry_run": False, **await services.nasdoom.post(f"/v1/queue/{item_id}/command", body)}
+        )
 
     return await safe_tool(run)
 
 
-async def nasdoom_requests_action(services: Services, request_id: str, action: str) -> dict[str, Any]:
+async def nasdoom_requests_action(
+    services: Services, request_id: str, action: str, confirm: bool = False
+) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
             return _unavailable()
         if action not in VALID_REQUEST_ACTIONS:
-            return ToolResponse.failure("validation", "Unsupported action.", {"allowed": sorted(VALID_REQUEST_ACTIONS)})
-        return ToolResponse.success(await services.nasdoom.post(f"/v1/requests/{request_id}/{action}"))
+            return ToolResponse.failure(
+                "validation", "Unsupported action.", {"allowed": sorted(VALID_REQUEST_ACTIONS)}
+            )
+        if not confirm:
+            # Look the request up so the preview shows what's actually being
+            # approved/declined (title, requester) rather than a bare ID the
+            # model could have gotten wrong.
+            listing = await services.nasdoom.get("/v1/requests", {"filter": "all", "take": 100})
+            requests = listing.get("requests", []) if isinstance(listing, dict) else []
+            matched = next((r for r in requests if str(r.get("id")) == str(request_id)), None)
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "matched_request": matched,
+                    "request_found": matched is not None,
+                    "would_apply": {"request_id": request_id, "action": action},
+                }
+            )
+        return ToolResponse.success(
+            {"dry_run": False, **await services.nasdoom.post(f"/v1/requests/{request_id}/{action}")}
+        )
 
     return await safe_tool(run)
 
@@ -122,12 +166,18 @@ async def nasdoom_match_search(services: Services, rating_key: str, query: str |
     return await safe_tool(run)
 
 
-async def nasdoom_match_apply(services: Services, rating_key: str, guid: str, name: str) -> dict[str, Any]:
+async def nasdoom_match_apply(
+    services: Services, rating_key: str, guid: str, name: str, confirm: bool = False
+) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
             return _unavailable()
+        if not confirm:
+            return ToolResponse.success(
+                {"dry_run": True, "would_apply": {"rating_key": rating_key, "guid": guid, "name": name}}
+            )
         return ToolResponse.success(
-            await services.nasdoom.post(f"/v1/match/{rating_key}", {"guid": guid, "name": name})
+            {"dry_run": False, **await services.nasdoom.post(f"/v1/match/{rating_key}", {"guid": guid, "name": name})}
         )
 
     return await safe_tool(run)
