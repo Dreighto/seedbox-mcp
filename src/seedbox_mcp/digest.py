@@ -6,7 +6,7 @@ import logging
 
 from fastmcp import Client
 
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, READ_ONLY_TOOLS, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import send_message
 
@@ -68,6 +68,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
+        allowed_tools=READ_ONLY_TOOLS,
         ollama_url=settings.ollama_url,
     )
 

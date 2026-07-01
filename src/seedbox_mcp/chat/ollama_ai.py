@@ -20,6 +20,34 @@ logger = logging.getLogger("seedbox_mcp.chat.ollama_ai")
 DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 MAX_TOOL_ROUNDS = 6
 
+# The NAS-ops harness's current capability boundary (digest + telegram_bot).
+# Every READ_ONLY tool the MCP server registers (see server.py) — explicitly
+# excludes every WRITE/DESTRUCTIVE one (radarr/sonarr add/delete/queue_action)
+# even though list_tools() would otherwise hand them to the model. Extend
+# this set deliberately when adding real write capability, not by accident.
+READ_ONLY_TOOLS: set[str] = {
+    "media_status",
+    "radarr_overview",
+    "sonarr_overview",
+    "plex_overview",
+    "plex_library_size",
+    "media_search",
+    "staleness_report",
+    "tautulli_history",
+    "tautulli_users",
+    "tautulli_user_stats",
+    "nas_backup_health",
+    "nas_storage_inventory",
+    "prowlarr_overview",
+    "sabnzbd_overview",
+    "jellyseerr_overview",
+    "nasdoom_health",
+    "nasdoom_queue",
+    "nasdoom_omni_search",
+    "nasdoom_requests_overview",
+    "nasdoom_control",
+}
+
 
 def mcp_tool_to_ollama(tool: Any) -> dict[str, Any]:
     return {
@@ -61,18 +89,32 @@ async def run_agent_turn(
     system_prompt: str,
     mcp_client: Client[Any],
     model: str,
+    allowed_tools: set[str] | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
 ) -> str:
     """Runs `task` through `model` (an Ollama-served model, typically a
-    `:cloud`-tagged one) with tool-calling against every tool the connected
-    MCP server exposes. Returns the final assistant text.
+    `:cloud`-tagged one) with tool-calling against tools the connected MCP
+    server exposes. Returns the final assistant text.
+
+    `allowed_tools`: hard allowlist by tool name. The MCP server's
+    READ_ONLY/WRITE/DESTRUCTIVE annotations (see server.py) are advisory
+    metadata, not access control — `list_tools()` returns everything
+    regardless, so relying on the system prompt alone ("you have no write
+    tools") is a soft gate a confused model could ignore. This filters the
+    schema handed to the model AND refuses to execute anything outside the
+    set even if the model asks for it anyway (defense in depth against the
+    inline-JSON tool-call fallback inventing a name). None = no restriction,
+    for callers that intend full access (there are currently none — every
+    caller passes an explicit set).
 
     One-shot, not a chat session — built for the routine-digest and bot-reply
     use cases, not an interactive multi-turn UI. Caps at MAX_TOOL_ROUNDS tool
     round-trips so a confused model can't loop forever."""
     async with mcp_client:
         raw_tools = await mcp_client.list_tools()
+    if allowed_tools is not None:
+        raw_tools = [t for t in raw_tools if t.name in allowed_tools]
     tools = [mcp_tool_to_ollama(t) for t in raw_tools]
 
     messages: list[dict[str, Any]] = [
@@ -111,6 +153,16 @@ async def run_agent_turn(
                     except json.JSONDecodeError:
                         args = {}
                 logger.info("ollama_ai tool call: %s(%s)", name, args)
+                if allowed_tools is not None and name not in allowed_tools:
+                    logger.error("ollama_ai BLOCKED disallowed tool call: %s(%s)", name, args)
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "content": '{"ok": false, "error_type": "not_permitted", '
+                            '"message": "This tool is not available in this context."}',
+                        }
+                    )
+                    continue
                 try:
                     async with mcp_client:
                         result = await mcp_client.call_tool(name, args)

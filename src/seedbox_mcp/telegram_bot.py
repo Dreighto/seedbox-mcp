@@ -6,7 +6,7 @@ import logging
 import httpx
 from fastmcp import Client
 
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, READ_ONLY_TOOLS, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import TELEGRAM_API, send_message
 
@@ -67,6 +67,7 @@ async def _handle_message(settings: BotSettings, token: str, chat_id: int, text:
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
             model=settings.ollama_bot_model,
+            allowed_tools=READ_ONLY_TOOLS,
             ollama_url=settings.ollama_url,
         )
         logger.info("reply: %r", reply)
