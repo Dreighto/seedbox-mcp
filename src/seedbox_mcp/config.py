@@ -52,6 +52,18 @@ class Settings(BaseSettings):
     tautulli_url: HttpUrl | None = None
     tautulli_api_key: SecretStr | None = None
 
+    prowlarr_enabled: bool = False
+    prowlarr_url: HttpUrl | None = None
+    prowlarr_api_key: SecretStr | None = None
+
+    sabnzbd_enabled: bool = False
+    sabnzbd_url: HttpUrl | None = None
+    sabnzbd_api_key: SecretStr | None = None
+
+    jellyseerr_enabled: bool = False
+    jellyseerr_url: HttpUrl | None = None
+    jellyseerr_api_key: SecretStr | None = None
+
     oauth_access_token_ttl: int = Field(default=3600, gt=0)
     oauth_state_path: Path = Path(".oauth_state.json")
 
@@ -62,7 +74,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("tautulli_api_key", mode="before")
+    @field_validator("tautulli_api_key", "prowlarr_api_key", "sabnzbd_api_key", "jellyseerr_api_key", mode="before")
     @classmethod
     def empty_secret_is_none(cls, value: Any) -> Any:
         if value == "":
@@ -88,6 +100,18 @@ class Settings(BaseSettings):
     @property
     def tautulli_base_url(self) -> str | None:
         return str(self.tautulli_url).rstrip("/") if self.tautulli_url else None
+
+    @property
+    def prowlarr_base_url(self) -> str | None:
+        return str(self.prowlarr_url).rstrip("/") if self.prowlarr_url else None
+
+    @property
+    def sabnzbd_base_url(self) -> str | None:
+        return str(self.sabnzbd_url).rstrip("/") if self.sabnzbd_url else None
+
+    @property
+    def jellyseerr_base_url(self) -> str | None:
+        return str(self.jellyseerr_url).rstrip("/") if self.jellyseerr_url else None
 
     def secret(self, name: str) -> str:
         value = getattr(self, name)

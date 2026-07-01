@@ -34,6 +34,7 @@ from seedbox_mcp.tools.sonarr import (
     sonarr_queue_action,
     sonarr_research_series,
 )
+from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.staleness import staleness_report
 from seedbox_mcp.tools.status import media_status
@@ -530,6 +531,23 @@ def create_mcp(services: Services) -> FastMCP:
         """
         return await nas_storage_inventory(labels)
 
+    async def prowlarr_overview_tool() -> dict[str, Any]:
+        """Prowlarr indexer health: reachability, per-indexer enabled state,
+        which indexers (if any) are disabled/failing."""
+        return await prowlarr_overview(services)
+
+    async def sabnzbd_overview_tool() -> dict[str, Any]:
+        """SABnzbd download-client status: paused state, current speed/ETA,
+        queue preview, and recent failed downloads from history."""
+        return await sabnzbd_overview(services)
+
+    async def jellyseerr_overview_tool(limit: int = 20) -> dict[str, Any]:
+        """Jellyseerr request state: aggregate counts (pending/approved/
+        available/etc) plus the most recent pending requests — who asked for
+        what and when. This is the "still waiting on a request" answer that
+        staleness_report/media_status can't give on their own."""
+        return await jellyseerr_overview(services, limit)
+
     register_tool(mcp, "media_status", READ_ONLY, media_status_tool)
     register_tool(mcp, "radarr_overview", READ_ONLY, radarr_overview_tool)
     register_tool(mcp, "sonarr_overview", READ_ONLY, sonarr_overview_tool)
@@ -552,6 +570,9 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "tautulli_user_stats", READ_ONLY, tautulli_user_stats_tool)
     register_tool(mcp, "nas_backup_health", READ_ONLY, nas_backup_health_tool)
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
+    register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
+    register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)
+    register_tool(mcp, "jellyseerr_overview", READ_ONLY, jellyseerr_overview_tool)
     return mcp
 
 
