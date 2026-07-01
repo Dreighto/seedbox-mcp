@@ -97,6 +97,14 @@ async def run_bot() -> None:
                 logger.warning("getUpdates network error, retrying: %s", exc)
                 await asyncio.sleep(5)
                 continue
+            except httpx.HTTPStatusError as exc:
+                # 409 = another poller is already using this token (e.g. a
+                # second instance briefly overlapping during a restart) —
+                # back off and retry instead of crashing; systemd's
+                # Restart=always would otherwise just recreate the same race.
+                logger.warning("getUpdates HTTP error, retrying: %s", exc)
+                await asyncio.sleep(10)
+                continue
 
             for update in updates:
                 offset = update["update_id"] + 1
