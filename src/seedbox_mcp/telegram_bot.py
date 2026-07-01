@@ -29,6 +29,19 @@ logger = logging.getLogger("seedbox_mcp.telegram_bot")
 # of crashing (see chat/ollama_ai.py — this is exactly the model that
 # originally exposed that bug).
 DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
+
+# Poster/cover identification specifically needs more reliable multi-step
+# reasoning (reconstruct garbled OCR fragments, verify with a follow-up
+# search, disambiguate same-titled entries) than a quick text reply does —
+# live testing found DEFAULT_BOT_MODEL genuinely inconsistent on this one
+# task across three back-to-back runs against the same real photo: one
+# clean correct identification, one that produced unrelated guesses and
+# leaked a malformed reply, one that never finished within a generous
+# timeout. Same tradeoff logic as monitor.py's model choice — this path
+# isn't latency-sensitive enough to justify the smaller model's
+# unreliability here.
+PHOTO_IDENTIFY_MODEL = "qwen3-coder:480b-cloud"
+PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
 POLL_TIMEOUT_S = 30
 
 # Conversation history, persisted to disk — this service gets restarted
@@ -360,25 +373,37 @@ class BotSettings(Settings):
 
 
 async def _handle_message(
-    settings: BotSettings, token: str, chat_id: int, text: str, state: ChatState
+    settings: BotSettings,
+    token: str,
+    chat_id: int,
+    text: str,
+    state: ChatState,
+    model: str | None = None,
+    max_tool_rounds: int | None = None,
 ) -> ChatState:
     """Runs one turn and returns the updated chat state — on error, returns
     `state` unchanged (a failed turn shouldn't inject partial/broken state
-    into the next one)."""
+    into the next one). `model`/`max_tool_rounds` let a caller override the
+    default fast/cheap interactive model for a specific task that needs
+    more reliable multi-step reasoning (see _handle_photo_message)."""
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
     try:
+        run_kwargs: dict[str, Any] = {}
+        if max_tool_rounds is not None:
+            run_kwargs["max_tool_rounds"] = max_tool_rounds
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
-            model=settings.ollama_bot_model,
+            model=model or settings.ollama_bot_model,
             allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
             known_entity_ids=state.get("known_entity_ids"),
             ollama_url=settings.ollama_url,
+            **run_kwargs,
         )
         logger.info("reply: %r", reply)
     except Exception:
@@ -458,28 +483,49 @@ async def _handle_photo_message(
         f"{sparse_warning} "
         f"{'They also wrote: ' + caption if caption else ''} "
         "This is the COMPLETE list. There is no other text on the image beyond what's listed above, so don't "
-        "describe or refer to any text that isn't in that list, and don't invent a 'subtitle' or 'tagline' that "
-        "wasn't actually extracted. Poster typography (stylized logos, overlapping graphics) sometimes defeats "
-        "OCR and produces garbled fragments that don't read as real words. If a fragment looks garbled, say so "
-        "plainly and set it aside rather than folding it into a guessed title.\n\n"
-        "The most important rule here: a short or generic extracted word (one word, or a word that's part of "
-        "many different titles) is NOT enough on its own to confidently identify a specific movie or show. "
-        "When that's what you have, do not default to whichever matching title happens to be the most famous "
-        "one. A well-known franchise matching a partial word is exactly as likely to be wrong as an obscure "
-        "title matching the same word. Real example of this going wrong: OCR caught only the word 'Guardians' "
-        "from a poster for an obscure film called Blades of the Guardians, and the reply confidently declared "
-        "it was Guardians of the Galaxy (the famous franchise) instead. That is the failure to avoid. If the "
-        "extracted text is this thin, say plainly that OCR only caught a partial/generic word and you can't "
-        "confidently identify which title it is, quote the raw extracted text so the operator can judge for "
-        "themselves, and ask them to confirm or send a clearer photo (or the full title) rather than guessing. "
-        "Do the same when a title has multiple entries (sequels, a franchise with numbered volumes/seasons) "
-        "and the extracted text doesn't distinguish which one this is: list the candidates with what "
-        "distinguishes them (year, subtitle, volume number) instead of picking one.\n\n"
-        "Only proceed to check Plex library status (media_search / nasdoom_omni_search) once you actually have "
-        "a specific, justified title candidate, not a guess. If it's not in the library yet, offer to add it; "
-        "don't add it without the operator confirming, same as any other add."
+        "describe or refer to any text that isn't in that list.\n\n"
+        "Step 1 - attempt reconstruction. Poster typography (stylized logos, overlapping graphics) often defeats "
+        "OCR on low-resolution images and produces garbled fragments that don't read as real words on their "
+        "own. Before giving up on a garbled fragment, check whether it shares a letter prefix/suffix with a "
+        "plausible word (e.g. 'BLADKSH' sharing 'BLAD' with 'BLADES'), and try combining ALL the fragments, "
+        "garbled ones included, into one candidate title, the way a person squinting at a blurry poster would. "
+        "A search of the raw combined fragments (messy, includes garbled words) is a reasonable first probe, "
+        "but once you've settled on a clean candidate title in your own reasoning, run a SEPARATE follow-up "
+        "search of just that clean title on its own. The clean search ranks results differently and can surface "
+        "a better, more specific match than the messy one did; don't settle for whatever the first messy search "
+        "happened to return if you have a cleaner guess to verify.\n\n"
+        "Step 2 - verify the match actually explains everything. Only treat a search result as a real "
+        "identification if it closely matches the FULL reconstruction, accounting for most or all of the "
+        "extracted fragments, not just one. This is the critical check: a title that only explains ONE clean "
+        "fragment while leaving the others (garbled or not) completely unaccounted for is NOT a match, it's a "
+        "coincidence, no matter how well-known that title is. Real example of getting this wrong: OCR extracted "
+        "'GUARDIANS' (clean) and 'BLADKSH' (garbled), and a reply confidently identified this as 'Guardians of "
+        "the Galaxy' (a famous franchise that explains 'GUARDIANS' but has nothing to do with 'BLADKSH') "
+        "instead of reconstructing 'Blades of the Guardians' (which explains both). Do not default to fame or "
+        "familiarity when a candidate leaves fragments unexplained; a full reconstruction that fits everything "
+        "beats a partial match to something famous.\n\n"
+        "Step 3 - report honestly. If Step 1/2 produces a confident full match, present it clearly as an "
+        "OCR-derived best guess (not a certainty) and ask the operator to confirm, since the source text was "
+        "rough. If no reconstruction produces a match that explains the fragments, say plainly that OCR wasn't "
+        "clear enough to identify this one, quote the raw extracted text so the operator can judge for "
+        "themselves, and ask them to confirm the title or send a clearer photo rather than guessing. Do the "
+        "same when the exact same title matches more than one real entry (sequels, a franchise with numbered "
+        "volumes/seasons, or even an unrelated movie and TV series that happen to share a title) and nothing "
+        "you extracted distinguishes which one this is: list the candidates with what distinguishes them "
+        "(year, medium, subtitle, volume number) instead of picking one for the operator.\n\n"
+        "Once you have a specific, justified title candidate (not a guess), check Plex library status. If it's "
+        "not in the library yet, offer to add it; don't add it without the operator confirming, same as any "
+        "other add."
     )
-    return await _handle_message(settings, token, chat_id, task, state)
+    return await _handle_message(
+        settings,
+        token,
+        chat_id,
+        task,
+        state,
+        model=PHOTO_IDENTIFY_MODEL,
+        max_tool_rounds=PHOTO_IDENTIFY_MAX_TOOL_ROUNDS,
+    )
 
 
 async def run_bot() -> None:
