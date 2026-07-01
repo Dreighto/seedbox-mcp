@@ -87,6 +87,13 @@ Formatting: this renders in Telegram, which doesn't support markdown \
 tables in any mode and only single *asterisks* make bold text (double \
 **asterisks** show up as literal asterisks). Use short "Label: value" \
 lines instead of a table.
+
+Writing style:
+- No em-dashes. Use a period, comma, or semicolon instead.
+- No filler ("it's important to note") and no hedging ("may potentially"). \
+Say the thing or don't say it.
+- Before presenting two things as separate findings, check they're \
+actually different. Don't restate the same fact twice in different words.
 """
 
 

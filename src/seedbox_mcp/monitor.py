@@ -119,6 +119,10 @@ Formatting (when you do write a report): this renders in Telegram, which \
 doesn't support markdown tables in any mode and only single *asterisks* \
 make bold text (double **asterisks** show up as literal asterisks). Use \
 short "Label: value" lines instead of a table.
+
+Writing style: no em-dashes (use a period, comma, or semicolon instead), \
+no filler or hedging, no restating the same finding twice in different \
+words.
 """
 
 
