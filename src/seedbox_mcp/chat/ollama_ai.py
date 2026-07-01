@@ -275,6 +275,7 @@ async def run_agent_turn(
     known_entity_ids: dict[str, list[int]] | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
+    max_tool_rounds: int = MAX_TOOL_ROUNDS,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, list[int]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
@@ -333,8 +334,12 @@ async def run_agent_turn(
     actually observed gets rejected rather than trusted. Same persistence
     contract as `pending_action`.
 
-    Caps at MAX_TOOL_ROUNDS tool round-trips per call so a confused model
-    can't loop forever within one turn."""
+    `max_tool_rounds`: caps tool round-trips per call so a confused model
+    can't loop forever within one turn. Defaults to MAX_TOOL_ROUNDS; a caller
+    that needs a single turn to check many independent tools (e.g. a
+    multi-signal monitor cycle) should pass a higher value — each hallucinated
+    kwarg that gets retried also consumes a round, so "number of tools to
+    check" isn't the only thing eating the budget."""
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
     known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS
@@ -351,7 +356,7 @@ async def run_agent_turn(
     ]
 
     async with httpx.AsyncClient(base_url=ollama_url, timeout=timeout_s) as http:
-        for _round in range(MAX_TOOL_ROUNDS):
+        for _round in range(max_tool_rounds):
             resp = await http.post(
                 "/api/chat",
                 json={"model": model, "messages": messages, "tools": tools, "stream": False},

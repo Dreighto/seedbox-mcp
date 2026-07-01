@@ -621,14 +621,15 @@ def create_mcp(services: Services) -> FastMCP:
         """grouping values: daily, monthly, total."""
         return await tautulli_user_stats(services, user_id, grouping)
 
-    async def nas_backup_health_tool() -> dict[str, Any]:
+    async def nas_backup_health_tool(nocache: bool = True, limit: int | None = None) -> dict[str, Any]:
         """Checks the restic backup jobs (local daily, NAS offsite, SSD emergency)
         via read-only systemd status — does not start/stop/restart anything.
 
         Each entry reports status: ok, stale, failed, or never_run, plus
         hours_since_last_run. Use this to answer "are my backups actually
         running" instead of assuming a quiet timer means a healthy backup.
-        """
+        nocache/limit are accepted but have no effect — there are always
+        exactly 3 backup jobs, always checked live."""
         return await nas_backup_health()
 
     async def nas_storage_inventory_tool(labels: list[str] | None = None) -> dict[str, Any]:
@@ -680,14 +681,15 @@ def create_mcp(services: Services) -> FastMCP:
         """
         return await prowlarr_overview(services)
 
-    async def prowlarr_indexer_stats_tool() -> dict[str, Any]:
+    async def prowlarr_indexer_stats_tool(nocache: bool = True) -> dict[str, Any]:
         """Per-indexer usage/failure counters (queries, grabs, failures,
         response time) — the right tool for "is an indexer actually working"
         or diagnosing why a search/grab keeps failing on one source, as
         opposed to prowlarr_overview's enabled/disabled snapshot. A nonzero
         failed_auth_queries is the strongest signal something's actually
         wrong (expired key/VIP, not just a transient failure) —
-        likely_needs_attention flags that plus a >50% query failure rate."""
+        likely_needs_attention flags that plus a >50% query failure rate.
+        nocache is accepted but has no effect — this call is always live."""
         return await prowlarr_indexer_stats(services)
 
     async def sabnzbd_overview_tool() -> dict[str, Any]:
