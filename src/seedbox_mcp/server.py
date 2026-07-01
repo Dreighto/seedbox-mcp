@@ -21,6 +21,8 @@ from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.nasdoom import (
     nasdoom_control,
+    nasdoom_find,
+    nasdoom_find_grab,
     nasdoom_health,
     nasdoom_match_apply,
     nasdoom_match_search,
@@ -664,6 +666,28 @@ def create_mcp(services: Services) -> FastMCP:
         no write happens. confirm=true executes."""
         return await nasdoom_match_apply(services, rating_key, guid, name, confirm)
 
+    async def nasdoom_find_tool(query: str, scope: str = "music") -> dict[str, Any]:
+        """Search for non-video content (music samples/kits, software, games,
+        books) via Prowlarr — the right tool for "find me a sample pack for
+        X" or similar. scope: music|software|games|books. NOT for movies/TV
+        — use nasdoom_omni_search for those. Returns a list of grabId values
+        (opaque, single-use, expire in 30 min) — pass one to nasdoom_find_grab
+        to actually download it. Sorted by popularity (grabs count)."""
+        return await nasdoom_find(services, query, scope)
+
+    async def nasdoom_find_grab_tool(grab_id: str, share: bool = False, confirm: bool = False) -> dict[str, Any]:
+        """Download a result from nasdoom_find. grab_id comes from that
+        call's results — use one within ~30 minutes or it expires (search
+        again if so). share=true routes it into the shared/Transfer portal
+        folder (visible on the friend-facing share site) instead of your
+        private library — only set this if that's actually what was asked
+        for, default is private.
+
+        Two-step: confirm=false (default) echoes back what would be grabbed,
+        no download happens. confirm=true executes — this spends bandwidth
+        and disk space for real, so don't skip the preview."""
+        return await nasdoom_find_grab(services, grab_id, share, confirm)
+
     async def escalate_to_worker_tool(
         issue: str, worker: str = DEFAULT_ESCALATION_WORKER, target_repo: str = DEFAULT_TARGET_REPO
     ) -> dict[str, Any]:
@@ -715,6 +739,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_requests_action", WRITE, nasdoom_requests_action_tool)
     register_tool(mcp, "nasdoom_match_search", READ_ONLY, nasdoom_match_search_tool)
     register_tool(mcp, "nasdoom_match_apply", WRITE, nasdoom_match_apply_tool)
+    register_tool(mcp, "nasdoom_find", READ_ONLY, nasdoom_find_tool)
+    register_tool(mcp, "nasdoom_find_grab", WRITE, nasdoom_find_grab_tool)
     register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 

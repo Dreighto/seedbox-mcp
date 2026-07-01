@@ -181,3 +181,44 @@ async def nasdoom_match_apply(
         )
 
     return await safe_tool(run)
+
+
+# ── Non-video acquisition (music/software/games/books via Prowlarr) ────────
+
+VALID_FIND_SCOPES = {"music", "software", "games", "books"}
+
+
+async def nasdoom_find(services: Services, query: str, scope: str = "music") -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if scope not in VALID_FIND_SCOPES:
+            return ToolResponse.failure("validation", "Unsupported scope.", {"allowed": sorted(VALID_FIND_SCOPES)})
+        return ToolResponse.success(await services.nasdoom.get("/v1/find", {"q": query, "scope": scope}))
+
+    return await safe_tool(run)
+
+
+async def nasdoom_find_grab(
+    services: Services, grab_id: str, share: bool = False, confirm: bool = False
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if not confirm:
+            # grabId is opaque and single-use (30 min TTL) — the preview
+            # can't re-resolve what it points to without spending it, so this
+            # is a plain echo. The model should already know the title from
+            # the nasdoom_find call that produced this grab_id.
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "would_apply": {"grab_id": grab_id, "share": share},
+                    "note": "grabId expires in 30 minutes and is single-use — "
+                    "confirm soon or it'll come back expired and need a fresh nasdoom_find.",
+                }
+            )
+        result = await services.nasdoom.post("/v1/find/grab", {"grabId": grab_id, "share": share})
+        return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)

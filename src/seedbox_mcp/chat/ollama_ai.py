@@ -49,20 +49,25 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_requests_overview",
     "nasdoom_control",
     "nasdoom_match_search",
+    "nasdoom_find",
 }
 
-# Tier 1 — reversible, low-stakes actions the harness may take directly, no
-# extra confirmation gate beyond the model's own judgment. Everything here
-# is trivially undoable (pause/resume, approve/decline, re-match) — nothing
-# that deletes or acquires content. See project memory for the tiering
-# rationale (Tier 2/3 — media add/delete, storage cleanup — deliberately
-# NOT here yet; those need a real preview-then-confirm pattern this harness
-# doesn't have).
+# Actions the harness may take, gated by the confirm=false|true preview
+# pattern (see action_audit.py) rather than free rein — every real
+# (confirm=true) call here is audit-logged and counts against
+# MAX_ACTIONS_PER_HOUR. Started as "Tier 1: reversible only" (pause/resume,
+# approve/decline, re-match); nasdoom_find_grab acquires real content
+# (spends bandwidth/disk, not reversible in the undo sense) but got folded
+# in once the preview/audit/rate-limit machinery existed to gate it properly
+# — the safety mechanism, not the tool's reversibility, is what earns a spot
+# here now. Media delete / storage cleanup still deliberately NOT here —
+# destructive actions warrant a stronger bar than this tier's, not built yet.
 ACTION_TOOLS: set[str] = {
     "nasdoom_queue_command",
     "nasdoom_queue_item_command",
     "nasdoom_requests_action",
     "nasdoom_match_apply",
+    "nasdoom_find_grab",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
