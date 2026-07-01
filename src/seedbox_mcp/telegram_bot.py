@@ -434,6 +434,7 @@ async def _handle_photo_message(
         return state
 
     texts = ocr_data.get("texts_by_prominence", [])
+    logger.info("photo OCR result: %r", texts)
     if not texts:
         await send_message(
             token, chat_id, "Didn't find any readable text in that photo — is it a clear shot of the poster/cover?"
@@ -441,14 +442,42 @@ async def _handle_photo_message(
         return state
 
     extracted = "; ".join(f'"{t["text"]}" (confidence {t.get("confidence", 0):.2f})' for t in texts[:8])
+    # Deterministic signal, not left to the model's own judgment of "is this
+    # thin" — if everything OCR caught is a single word, that's mechanically
+    # too little to identify a specific title from, regardless of how the
+    # model feels about it.
+    all_single_words = all(len(str(t.get("text", "")).split()) <= 1 for t in texts)
+    sparse_warning = (
+        "\n\nWARNING: every extracted fragment is a single word. That is not enough to identify a specific "
+        "title on its own, no matter how confident a match seems. Say so plainly rather than guessing."
+        if all_single_words
+        else ""
+    )
     task = (
-        f"The operator sent a photo. OCR extracted this text, largest/most prominent first: {extracted}. "
+        f"The operator sent a photo. OCR extracted exactly this text, largest/most prominent first: {extracted}."
+        f"{sparse_warning} "
         f"{'They also wrote: ' + caption if caption else ''} "
-        "Figure out the likely movie/show title (the largest text is usually it, but use judgment — "
-        "ignore taglines, cast names, studio logos), then check whether it's already in the Plex library "
-        "or could be added (media_search / nasdoom_omni_search). Report what you found in plain terms, and "
-        "if it's not in the library yet, offer to add it — don't add it without the operator confirming, "
-        "same as any other add."
+        "This is the COMPLETE list. There is no other text on the image beyond what's listed above, so don't "
+        "describe or refer to any text that isn't in that list, and don't invent a 'subtitle' or 'tagline' that "
+        "wasn't actually extracted. Poster typography (stylized logos, overlapping graphics) sometimes defeats "
+        "OCR and produces garbled fragments that don't read as real words. If a fragment looks garbled, say so "
+        "plainly and set it aside rather than folding it into a guessed title.\n\n"
+        "The most important rule here: a short or generic extracted word (one word, or a word that's part of "
+        "many different titles) is NOT enough on its own to confidently identify a specific movie or show. "
+        "When that's what you have, do not default to whichever matching title happens to be the most famous "
+        "one. A well-known franchise matching a partial word is exactly as likely to be wrong as an obscure "
+        "title matching the same word. Real example of this going wrong: OCR caught only the word 'Guardians' "
+        "from a poster for an obscure film called Blades of the Guardians, and the reply confidently declared "
+        "it was Guardians of the Galaxy (the famous franchise) instead. That is the failure to avoid. If the "
+        "extracted text is this thin, say plainly that OCR only caught a partial/generic word and you can't "
+        "confidently identify which title it is, quote the raw extracted text so the operator can judge for "
+        "themselves, and ask them to confirm or send a clearer photo (or the full title) rather than guessing. "
+        "Do the same when a title has multiple entries (sequels, a franchise with numbered volumes/seasons) "
+        "and the extracted text doesn't distinguish which one this is: list the candidates with what "
+        "distinguishes them (year, subtitle, volume number) instead of picking one.\n\n"
+        "Only proceed to check Plex library status (media_search / nasdoom_omni_search) once you actually have "
+        "a specific, justified title candidate, not a guess. If it's not in the library yet, offer to add it; "
+        "don't add it without the operator confirming, same as any other add."
     )
     return await _handle_message(settings, token, chat_id, task, state)
 
