@@ -61,6 +61,8 @@ READ_ONLY_TOOLS: set[str] = {
     "sonarr_blocklist",
     "prowlarr_indexer_stats",
     "nasdoom_profiles",
+    "web_search",
+    "web_fetch",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview

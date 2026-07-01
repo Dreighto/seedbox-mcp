@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from seedbox_mcp.clients.arr import ArrClient
 from seedbox_mcp.clients.dispatch import DispatchClient
 from seedbox_mcp.clients.nasdoom import NasdoomClient
+from seedbox_mcp.clients.ollama_web import OllamaWebClient
 from seedbox_mcp.clients.plex import PlexClient
 from seedbox_mcp.clients.sabnzbd import SabnzbdClient
 from seedbox_mcp.clients.tautulli import TautulliClient
@@ -26,6 +27,7 @@ class Services:
     jellyseerr: ArrClient | None = None
     nasdoom: NasdoomClient | None = None
     dispatch: DispatchClient | None = None
+    ollama_web: OllamaWebClient | None = None
 
 
 def build_services(settings: Settings) -> Services:
@@ -54,6 +56,9 @@ def build_services(settings: Settings) -> Services:
             settings.dispatch_hmac_secret.get_secret_value(),
             settings.dispatch_prompt_inbox,
         )
+    ollama_web = None
+    if settings.ollama_web_search_api_key:
+        ollama_web = OllamaWebClient(settings.ollama_web_search_api_key.get_secret_value())
     return Services(
         settings=settings,
         radarr=ArrClient(settings.radarr_base_url, settings.radarr_api_key.get_secret_value()),
@@ -65,4 +70,5 @@ def build_services(settings: Settings) -> Services:
         jellyseerr=jellyseerr,
         nasdoom=nasdoom,
         dispatch=dispatch,
+        ollama_web=ollama_web,
     )

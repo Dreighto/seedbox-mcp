@@ -73,6 +73,7 @@ from seedbox_mcp.tools.sonarr import (
 from seedbox_mcp.tools.staleness import staleness_report
 from seedbox_mcp.tools.status import media_status
 from seedbox_mcp.tools.tautulli import tautulli_history, tautulli_user_stats, tautulli_users
+from seedbox_mcp.tools.web_search import web_fetch, web_search
 
 logger = logging.getLogger("seedbox_mcp")
 
@@ -647,6 +648,25 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def web_search_tool(query: str, max_results: int = 5) -> dict[str, Any]:
+        """Search the live web (Ollama's hosted search API) — use this for
+        anything needing current/outside information the NAS's own tools
+        don't have: researching a new tool/integration, checking current
+        best practices, looking up an error message, or any question whose
+        answer isn't "the state of this NAS right now". Returns up to
+        max_results (default 5, max 10) results with title/url/snippet.
+        Pair with web_fetch to read one result's full page if the snippet
+        isn't enough. Not needed for anything about this NAS's own current
+        state — use the NAS-specific tools for that, they're faster and
+        authoritative."""
+        return await web_search(services, query, max_results)
+
+    async def web_fetch_tool(url: str) -> dict[str, Any]:
+        """Fetch and read one specific web page's content (title + text,
+        truncated to ~8000 chars). Use after web_search when a snippet isn't
+        enough detail, or when the operator gives you a URL directly."""
+        return await web_fetch(services, url)
+
     async def prowlarr_overview_tool() -> dict[str, Any]:
         """Prowlarr indexer health: reachability, per-indexer enabled state,
         which indexers (if any) are disabled/failing.
@@ -934,6 +954,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_backup_health", READ_ONLY, nas_backup_health_tool)
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
     register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
+    register_tool(mcp, "web_search", READ_ONLY, web_search_tool)
+    register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
     register_tool(mcp, "prowlarr_indexer_stats", READ_ONLY, prowlarr_indexer_stats_tool)
     register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)

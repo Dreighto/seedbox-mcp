@@ -94,6 +94,14 @@ class Settings(BaseSettings):
     dispatch_hmac_secret: SecretStr | None = None
     dispatch_prompt_inbox: str = "/home/dreighto/dev/LogueOS-Orchestrator/data/n8n_inbox"
 
+    # Ollama's hosted web_search/web_fetch REST API (ollama.com/api/*) — a
+    # separate credential from the `ollama signin` OAuth session chat/
+    # ollama_ai.py already uses for :cloud model inference via the local
+    # daemon. Generated at ollama.com/settings/keys. Presence of the key
+    # alone gates availability (see runtime.py) — no separate _enabled flag,
+    # there's no URL/host to also configure.
+    ollama_web_search_api_key: SecretStr | None = None
+
     oauth_access_token_ttl: int = Field(default=3600, gt=0)
     oauth_state_path: Path = Path(".oauth_state.json")
 
@@ -111,6 +119,7 @@ class Settings(BaseSettings):
         "jellyseerr_api_key",
         "nas_ops_telegram_bot_token",
         "dispatch_hmac_secret",
+        "ollama_web_search_api_key",
         mode="before",
     )
     @classmethod
