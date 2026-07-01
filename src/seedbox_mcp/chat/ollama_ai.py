@@ -46,7 +46,28 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_omni_search",
     "nasdoom_requests_overview",
     "nasdoom_control",
+    "nasdoom_match_search",
 }
+
+# Tier 1 — reversible, low-stakes actions the harness may take directly, no
+# extra confirmation gate beyond the model's own judgment. Everything here
+# is trivially undoable (pause/resume, approve/decline, re-match) — nothing
+# that deletes or acquires content. See project memory for the tiering
+# rationale (Tier 2/3 — media add/delete, storage cleanup — deliberately
+# NOT here yet; those need a real preview-then-confirm pattern this harness
+# doesn't have).
+ACTION_TOOLS: set[str] = {
+    "nasdoom_queue_command",
+    "nasdoom_queue_item_command",
+    "nasdoom_requests_action",
+    "nasdoom_match_apply",
+}
+
+# Escalation — not itself an action against the NAS, just the "call for
+# backup" tool. Kept separate from ACTION_TOOLS so a caller can compose
+# READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS deliberately rather than
+# getting it bundled into either tier by accident.
+ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
 
 
 def mcp_tool_to_ollama(tool: Any) -> dict[str, Any]:

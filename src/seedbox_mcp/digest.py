@@ -6,7 +6,13 @@ import logging
 
 from fastmcp import Client
 
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, READ_ONLY_TOOLS, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import (
+    ACTION_TOOLS,
+    DEFAULT_OLLAMA_URL,
+    ESCALATION_TOOLS,
+    READ_ONLY_TOOLS,
+    run_agent_turn,
+)
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import send_message
 
@@ -37,17 +43,34 @@ equivalent), and nas_backup_health / nas_storage_inventory for backups and \
 the non-media dirs (Music, samples, Transfer) — also NASDOOM has no coverage \
 there.
 
-Call the tools relevant to the task you're given, then write a short plain-\
-English digest:
-- Lead with anything that needs the operator's attention (a failed/stale \
-backup, a stuck download, a disabled/failing indexer, runaway storage \
-growth). If nothing does, say so plainly — do not invent urgency.
+You also have Tier 1 action tools — reversible, low-stakes fixes you should \
+just apply when you find the matching problem, not just report:
+- nasdoom_queue_command / nasdoom_queue_item_command — the queue is paused \
+or an item is stuck: resume it, cancel it, or reprioritize it.
+- nasdoom_requests_action — a request has been sitting pending a long time \
+and is an obvious approve/decline call.
+- nasdoom_match_search + nasdoom_match_apply — a Plex item is clearly \
+mismatched and you can find the right match.
+If you take one of these actions, you MUST say so explicitly in the report \
+— name what was wrong and what you did about it. Never fix something \
+silently. If you're not confident an action is correct (ambiguous case, \
+matching not obviously right, a pending request that might be intentional), \
+report it instead of guessing.
+
+For anything you find that's broken but outside these tools' reach — a \
+failed backup, a disabled indexer, a service that's down, config drift — \
+call escalate_to_worker with a clear description of what you found. That \
+hands it to a full worker with real system access. Say in the report that \
+you escalated it and why; don't just silently note the problem and move on.
+
+Write a short plain-English digest:
+- Lead with anything that needs the operator's attention, including \
+anything you fixed or escalated. If nothing does, say so plainly — do not \
+invent urgency.
 - Group the rest by area (backups / media / downloads / other storage).
 - Be concrete: name the thing, the number, the age. "3 movies added 6+ \
 months ago, never watched, 41GB" beats "some old content was found."
-- You have no write or delete tools right now — never imply you took an \
-action, only that you found something. Recommending a follow-up is fine.
-- Keep it under ~300 words unless something genuinely needs more detail.
+- Keep it under ~350 words unless something genuinely needs more detail.
 """
 
 
@@ -68,7 +91,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
-        allowed_tools=READ_ONLY_TOOLS,
+        allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
         ollama_url=settings.ollama_url,
     )
 

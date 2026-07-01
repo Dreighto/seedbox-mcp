@@ -83,6 +83,17 @@ class Settings(BaseSettings):
     nas_ops_telegram_bot_token: SecretStr | None = None
     nas_ops_telegram_allowed_chat_id: int | None = None
 
+    # Escalation path — hands issues beyond the harness's own Tier 1 tools to
+    # the LogueOS worker dispatch system (same mechanism as the operator's
+    # dispatch-worker skill). Secret copied from LogueOS-Orchestrator/.env
+    # rather than read cross-repo, matching the credential-duplication
+    # convention already used elsewhere in this stack (e.g. the NASDOOM
+    # build-bot's telegram.env copied to two hosts).
+    dispatch_enabled: bool = False
+    dispatch_listener_url: str = "http://127.0.0.1:19100"
+    dispatch_hmac_secret: SecretStr | None = None
+    dispatch_prompt_inbox: str = "/home/dreighto/dev/LogueOS-Orchestrator/data/n8n_inbox"
+
     oauth_access_token_ttl: int = Field(default=3600, gt=0)
     oauth_state_path: Path = Path(".oauth_state.json")
 
@@ -99,6 +110,7 @@ class Settings(BaseSettings):
         "sabnzbd_api_key",
         "jellyseerr_api_key",
         "nas_ops_telegram_bot_token",
+        "dispatch_hmac_secret",
         mode="before",
     )
     @classmethod

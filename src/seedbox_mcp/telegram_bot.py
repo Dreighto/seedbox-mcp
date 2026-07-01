@@ -6,7 +6,13 @@ import logging
 import httpx
 from fastmcp import Client
 
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, READ_ONLY_TOOLS, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import (
+    ACTION_TOOLS,
+    DEFAULT_OLLAMA_URL,
+    ESCALATION_TOOLS,
+    READ_ONLY_TOOLS,
+    run_agent_turn,
+)
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import TELEGRAM_API, send_message
 
@@ -36,15 +42,27 @@ get X" about one title. Already resolves inLibrary/managed/acquirable.
 staleness_report is for library-wide sweeps ("what haven't I watched in 6 \
 months"), not single-title lookups — don't reach for it on a one-off question.
 
+You can also act, not just look things up — Tier 1 tools for reversible, \
+low-stakes changes: nasdoom_queue_command / nasdoom_queue_item_command \
+(pause/resume/cancel/reprioritize a download), nasdoom_requests_action \
+(approve/decline a request), nasdoom_match_search + nasdoom_match_apply \
+(fix a mismatched Plex item). Use these when the operator asks directly \
+("pause the queue") or when it's the obvious next step in the conversation \
+— you don't need to ask permission for something this reversible, but say \
+plainly what you did. If genuinely unsure an action is what they want, ask \
+first — a live chat means you can just ask instead of guessing.
+
+For anything broken that's outside these tools — a failed backup, a service \
+that's down, config drift — call escalate_to_worker with a clear \
+description, tell the operator you escalated it and why, then move on. \
+Don't try to fix system-level things yourself; you don't have the tools \
+for that, and pretending otherwise wastes their time.
+
 This is a live conversation with the one person who runs this NAS, not a \
 scheduled report — answer their actual question, don't pad it into a \
 digest-style report unless they asked for one. Be direct and concise; a \
 one-line answer to a one-line question is correct. Use tools whenever the \
 answer depends on live state — don't guess.
-
-You have no write or delete tools right now. If asked to change something \
-(pause a download, delete media, etc.), say plainly that you can look things \
-up but can't act yet.
 """
 
 
@@ -67,7 +85,7 @@ async def _handle_message(settings: BotSettings, token: str, chat_id: int, text:
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
             model=settings.ollama_bot_model,
-            allowed_tools=READ_ONLY_TOOLS,
+            allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
             ollama_url=settings.ollama_url,
         )
         logger.info("reply: %r", reply)

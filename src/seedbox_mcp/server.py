@@ -17,12 +17,18 @@ from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
 from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
+from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.nasdoom import (
     nasdoom_control,
     nasdoom_health,
+    nasdoom_match_apply,
+    nasdoom_match_search,
     nasdoom_omni_search,
     nasdoom_queue,
+    nasdoom_queue_command,
+    nasdoom_queue_item_command,
+    nasdoom_requests_action,
     nasdoom_requests_overview,
 )
 from seedbox_mcp.tools.plex import plex_library_size, plex_overview
@@ -602,6 +608,59 @@ def create_mcp(services: Services) -> FastMCP:
         for the non-media watched dirs (Music/samples/Transfer) only."""
         return await nasdoom_control(services)
 
+    async def nasdoom_queue_command_tool(
+        action: str, value: float | None = None, unit: str | None = None
+    ) -> dict[str, Any]:
+        """Global download-queue control. action: pause|resume|speedcap.
+        For speedcap, value is required (0 = unlimited) and unit is
+        'percent' or 'mbps'. Reversible — pausing/resuming/re-capping can
+        always be undone with another call."""
+        return await nasdoom_queue_command(services, action, value, unit)
+
+    async def nasdoom_queue_item_command_tool(item_id: str, action: str, value: float | None = None) -> dict[str, Any]:
+        """Per-item download-queue control. Get item_id from nasdoom_queue.
+        action: pause|resume|cancel|priority (value=new priority, item type
+        dependent). SABnzbd items take all four; arr-import items only take
+        cancel (others 422 unsupported_on_import_lane — that's expected, not
+        a bug, explain it plainly if it happens)."""
+        return await nasdoom_queue_item_command(services, item_id, action, value)
+
+    async def nasdoom_requests_action_tool(request_id: str, action: str) -> dict[str, Any]:
+        """Approve or decline a friend's Jellyseerr request. Get request_id
+        from nasdoom_requests_overview. action: approve|decline. A status
+        change, not destructive — declining doesn't delete anything and can
+        be reversed by approving later if the requester is asked again."""
+        return await nasdoom_requests_action(services, request_id, action)
+
+    async def nasdoom_match_search_tool(rating_key: str, query: str | None = None) -> dict[str, Any]:
+        """Find Plex match candidates for a mismatched library item (what
+        Plex's own "Fix Match" offers). rating_key must be numeric — get it
+        from nasdoom_omni_search's plex.ratingKey or a staleness_report item.
+        Optional query does a typed title search for the candidate list."""
+        return await nasdoom_match_search(services, rating_key, query)
+
+    async def nasdoom_match_apply_tool(rating_key: str, guid: str, name: str) -> dict[str, Any]:
+        """Apply a chosen match from nasdoom_match_search — Plex re-matches
+        the item and refreshes its metadata. guid/name come from the
+        candidate you're applying, not free text."""
+        return await nasdoom_match_apply(services, rating_key, guid, name)
+
+    async def escalate_to_worker_tool(
+        issue: str, worker: str = DEFAULT_ESCALATION_WORKER, target_repo: str = DEFAULT_TARGET_REPO
+    ) -> dict[str, Any]:
+        """Hand off an issue you found but can't fix with your own tools to
+        a full LogueOS worker (default: claude-code — full shell/SSH access
+        and system-level judgment, not scoped to just this MCP server's
+        tools). Use this for anything requiring actually touching system
+        config, restarting services, or investigation beyond a single API
+        call — e.g. a broken backup path, a service that's down, a config
+        drift. `issue` should be a clear, complete description: what you
+        found, why it matters, and anything you already ruled out — the
+        worker starts fresh with no memory of this conversation. Returns a
+        trace_id; tell the operator you escalated and why, don't just go
+        quiet."""
+        return await escalate_to_worker(services, issue, worker, target_repo)
+
     register_tool(mcp, "media_status", READ_ONLY, media_status_tool)
     register_tool(mcp, "radarr_overview", READ_ONLY, radarr_overview_tool)
     register_tool(mcp, "sonarr_overview", READ_ONLY, sonarr_overview_tool)
@@ -632,6 +691,12 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_omni_search", READ_ONLY, nasdoom_omni_search_tool)
     register_tool(mcp, "nasdoom_requests_overview", READ_ONLY, nasdoom_requests_overview_tool)
     register_tool(mcp, "nasdoom_control", READ_ONLY, nasdoom_control_tool)
+    register_tool(mcp, "nasdoom_queue_command", WRITE, nasdoom_queue_command_tool)
+    register_tool(mcp, "nasdoom_queue_item_command", WRITE, nasdoom_queue_item_command_tool)
+    register_tool(mcp, "nasdoom_requests_action", WRITE, nasdoom_requests_action_tool)
+    register_tool(mcp, "nasdoom_match_search", READ_ONLY, nasdoom_match_search_tool)
+    register_tool(mcp, "nasdoom_match_apply", WRITE, nasdoom_match_apply_tool)
+    register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 
 

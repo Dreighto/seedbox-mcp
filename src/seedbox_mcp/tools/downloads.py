@@ -9,16 +9,17 @@ from seedbox_mcp.tools.common import clamp_limit, partial_call, safe_tool
 
 async def prowlarr_overview(services: Services) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
-        if not services.prowlarr:
+        prowlarr = services.prowlarr
+        if not prowlarr:
             return ToolResponse.failure("prowlarr_unavailable", "Prowlarr is not configured.")
         warnings: list[str] = []
-        status, warning = await partial_call(lambda: services.prowlarr.get("/api/v1/system/status"))
+        status, warning = await partial_call(lambda: prowlarr.get("/api/v1/system/status"))
         if warning:
             warnings.append(f"status: {warning}")
-        health, warning = await partial_call(lambda: services.prowlarr.get("/api/v1/health"))
+        health, warning = await partial_call(lambda: prowlarr.get("/api/v1/health"))
         if warning:
             warnings.append(f"health: {warning}")
-        indexers, warning = await partial_call(lambda: services.prowlarr.get("/api/v1/indexer"))
+        indexers, warning = await partial_call(lambda: prowlarr.get("/api/v1/indexer"))
         if warning:
             warnings.append(f"indexers: {warning}")
         indexer_list = indexers if isinstance(indexers, list) else []
@@ -41,13 +42,14 @@ async def prowlarr_overview(services: Services) -> dict[str, Any]:
 
 async def sabnzbd_overview(services: Services) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
-        if not services.sabnzbd:
+        sabnzbd = services.sabnzbd
+        if not sabnzbd:
             return ToolResponse.failure("sabnzbd_unavailable", "SABnzbd is not configured.")
         warnings: list[str] = []
-        queue_raw, warning = await partial_call(services.sabnzbd.queue)
+        queue_raw, warning = await partial_call(sabnzbd.queue)
         if warning:
             warnings.append(f"queue: {warning}")
-        history_raw, warning = await partial_call(lambda: services.sabnzbd.history(limit=25))
+        history_raw, warning = await partial_call(lambda: sabnzbd.history(limit=25))
         if warning:
             warnings.append(f"history: {warning}")
 
@@ -84,17 +86,16 @@ async def sabnzbd_overview(services: Services) -> dict[str, Any]:
 
 async def jellyseerr_overview(services: Services, limit: int = 20) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
-        if not services.jellyseerr:
+        jellyseerr = services.jellyseerr
+        if not jellyseerr:
             return ToolResponse.failure("jellyseerr_unavailable", "Jellyseerr is not configured.")
         bounded = clamp_limit(limit, default=20, maximum=100)
         warnings: list[str] = []
-        counts, warning = await partial_call(lambda: services.jellyseerr.get("/api/v1/request/count"))
+        counts, warning = await partial_call(lambda: jellyseerr.get("/api/v1/request/count"))
         if warning:
             warnings.append(f"counts: {warning}")
         pending, warning = await partial_call(
-            lambda: services.jellyseerr.get(
-                "/api/v1/request", {"filter": "pending", "take": bounded, "sort": "added"}
-            )
+            lambda: jellyseerr.get("/api/v1/request", {"filter": "pending", "take": bounded, "sort": "added"})
         )
         if warning:
             warnings.append(f"pending: {warning}")

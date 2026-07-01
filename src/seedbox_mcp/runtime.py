@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from seedbox_mcp.clients.arr import ArrClient
+from seedbox_mcp.clients.dispatch import DispatchClient
 from seedbox_mcp.clients.nasdoom import NasdoomClient
 from seedbox_mcp.clients.plex import PlexClient
 from seedbox_mcp.clients.sabnzbd import SabnzbdClient
@@ -24,6 +25,7 @@ class Services:
     sabnzbd: SabnzbdClient | None = None
     jellyseerr: ArrClient | None = None
     nasdoom: NasdoomClient | None = None
+    dispatch: DispatchClient | None = None
 
 
 def build_services(settings: Settings) -> Services:
@@ -45,6 +47,13 @@ def build_services(settings: Settings) -> Services:
     nasdoom = None
     if settings.nasdoom_enabled and settings.nasdoom_base_url:
         nasdoom = NasdoomClient(settings.nasdoom_base_url)
+    dispatch = None
+    if settings.dispatch_enabled and settings.dispatch_hmac_secret:
+        dispatch = DispatchClient(
+            settings.dispatch_listener_url,
+            settings.dispatch_hmac_secret.get_secret_value(),
+            settings.dispatch_prompt_inbox,
+        )
     return Services(
         settings=settings,
         radarr=ArrClient(settings.radarr_base_url, settings.radarr_api_key.get_secret_value()),
@@ -55,4 +64,5 @@ def build_services(settings: Settings) -> Services:
         sabnzbd=sabnzbd,
         jellyseerr=jellyseerr,
         nasdoom=nasdoom,
+        dispatch=dispatch,
     )
