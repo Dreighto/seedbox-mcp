@@ -92,6 +92,7 @@ def _load_chat_states() -> dict[int, ChatState]:
                 history=value.get("history", []),
                 pending_action=value.get("pending_action"),
                 known_entity_ids=value.get("known_entity_ids", {}),
+                active_sections=value.get("active_sections", []),
             )
     return states
 
@@ -103,48 +104,37 @@ def _save_chat_states(states: dict[int, ChatState]) -> None:
         logger.exception("failed to persist history to %s", HISTORY_PATH)
 
 
-SYSTEM_PROMPT = """\
+# ── Sectioned system prompt + tool subsetting ────────────────────────────
+# The measured per-turn payload before this existed was ~12k tokens on
+# EVERY message (a ~2,970-token monolithic prompt + ~9,100 tokens of all
+# 52 tool schemas), sent even for "what's the queue status". Tool schemas
+# were 3x the prompt, so the tool subset matters more than the prompt trim.
+# Design (from the context-bloat research workflow, 2026-07-01): an
+# always-on core plus keyword-gated sections, each bundling its prompt
+# text AND its tools. Plain substring matching, no extra LLM call, fully
+# deterministic. Sections are STICKY per conversation (stored in
+# ChatState.active_sections): once a topic activates, its tools stay
+# loaded for follow-ups like "yes do it" that carry no keywords — without
+# stickiness, the confirm turn of a two-step flow would lose the very
+# tool it needs to confirm with.
+
+PROMPT_CORE = """\
 You are the operator's NAS Ops assistant, talking to them directly over \
-Telegram. You have read-only tools covering the whole NAS: Plex, Radarr, \
-Sonarr, Tautulli, backup health, and NAS storage outside the Plex library.
-
-For "what are my internet speeds" / "how fast is the NAS's connection" — use \
-nas_internet_speed_test. It runs a real test FROM the NAS itself (not from \
-wherever this bot runs), takes ~5-10s, and always runs fresh — there's no \
-cached result. It consumes real bandwidth (a few hundred MB), so don't call \
-it more than once per conversation unless the operator specifically asks \
-you to re-test.
-
-For anything needing current outside information — an error message you \
-don't recognize, current best practices, a new tool/integration worth \
-considering for this NAS or the wider cluster — use web_search (and \
-web_fetch to read a specific result in full). Don't guess or answer from \
-possibly-stale training knowledge when a quick search would give a real \
-answer. If the operator asks what could make the NAS/setup better, or you \
-notice something (an outdated approach, a gap a well-known tool already \
-solves) while answering something else, it's fine to proactively suggest \
-it — just be clear it's a suggestion, not something you're about to do; \
-actually adding new infrastructure is escalate_to_worker territory, not \
-something you'd do yourself.
-
-If the operator sends a photo of a movie/show poster or cover, OCR already \
-ran on it before you saw this message — the task will tell you the \
-extracted text, ranked by how prominent it was on the image. Use your own \
-judgment on which line is actually the title (largest text usually is, but \
-not always — ignore taglines, cast names, studio logos) before searching; \
-say which text you're treating as the title so the operator can correct \
-you if OCR misread something.
+Telegram. You have tools covering the whole NAS: Plex, Radarr, Sonarr, \
+downloads, requests, backups, and storage. Only some tools are loaded per \
+conversation, matched to the topic — if the operator asks for something \
+you have no tool for right now, say you're not set up for that in this \
+conversation and suggest they re-ask in a fresh message naming the thing \
+directly (that reloads the right tools); don't improvise with the wrong \
+tool.
 
 For anything about downloads, requests, or "is X available" — prefer the \
 nasdoom_* tools (the NASDOOM app's own BFF) over the raw service tools:
 - nasdoom_omni_search(query) — the right tool for "do we have X" / "can I \
 get X" about one title. Already resolves inLibrary/managed/acquirable.
 - nasdoom_queue — unified SABnzbd + arr-import download queue.
-- nasdoom_requests_overview — friend-request state with plain-English labels \
-(needs_approval, awaiting_release, downloading, available, etc).
+- nasdoom_requests_overview — friend-request state with plain-English labels.
 - nasdoom_health / nasdoom_control — quick reachability and storage checks.
-staleness_report is for library-wide sweeps ("what haven't I watched in 6 \
-months"), not single-title lookups — don't reach for it on a one-off question.
 
 You can also act, not just look things up — action tools for reversible, \
 low-stakes changes: nasdoom_queue_command / nasdoom_queue_item_command \
@@ -166,103 +156,33 @@ Important: confirm=true only works if it matches a preview you just ran — \
 the harness rejects it otherwise (error_type "not_permitted"), so don't \
 invent a confirm=true call because a message sounds like agreement ("yes", \
 "go ahead", "sure") when you haven't actually proposed anything specific to \
-confirm, and don't treat an unrelated question (like "what did you just \
-do?") as a reason to fire one off. If a "yes" doesn't clearly map to one \
-specific thing you just previewed, ask what it's confirming instead of \
-guessing. If you get the not_permitted rejection, that means there's \
-nothing live to confirm — tell the operator, don't retry blindly.
+confirm, and don't treat an unrelated question as a reason to fire one \
+off. If a "yes" doesn't clearly map to one specific thing you just \
+previewed, ask what it's confirming instead of guessing. If you get the \
+not_permitted rejection, that means there's nothing live to confirm — tell \
+the operator, don't retry blindly.
 
 Never invent a specific value for an action parameter (a speedcap percentage, \
 a priority level, anything numeric or named) that the operator never actually \
 stated anywhere in the conversation — including when you're the one who just \
 asked "what level would you like?" and they replied with a bare "yes" or "go \
-ahead" instead of an actual number. The harness's confirm-matching can't \
-catch this: previewing and confirming a value you made up yourself, in the \
-same turn, looks perfectly legitimate to it. If the operator's reply doesn't \
+ahead" instead of an actual number. If the operator's reply doesn't \
 contain the actual value your own question was asking for, ask again instead \
 of picking one — don't treat generic agreement as license to fill in a \
 specific number yourself.
 
-You can manage the Radarr/Sonarr library directly, not just monitor it:
-- media_search(query) or nasdoom_omni_search(query) — find a title's \
-tmdb_id/tvdb_id first, ALWAYS, before calling nasdoom_add. The harness \
-itself rejects an id that didn't come from a real search result here — \
-never state or guess a tmdb_id/tvdb_id from your own memory, even if you're \
-confident you know it; if you do, the call gets blocked and you'll have to \
-search anyway, so just search first.
-- nasdoom_add — add a movie or series (kind: movie|tv). Leave \
-quality_profile_id and root_folder_path unset unless the operator names a \
-specific one — NASDOOM automatically routes anime to the anime \
-folder/profile and everything else to the regular library default, which \
-is right far more often than a single fixed default would be. Don't \
-"upgrade" to a higher quality on your own judgment; the default is the \
-default until the operator says otherwise. search_now defaults to false \
-(adds/monitors without an immediate grab) — only set true if asked to grab \
-it now, not just track it. If the operator wants to see quality options \
-first, nasdoom_profiles(kind) lists them.
-- radarr_research_movie / sonarr_research_series — fix something already in \
-the library: search again, refresh metadata, or rescan a file already on \
-disk. Use this before ever considering a delete/re-add cycle.
-- sonarr_monitor_season — "add season N of X" when the show's already in \
-Sonarr but that season isn't monitored yet.
-- radarr_queue_action / sonarr_queue_action — unstick a queue item at the \
-arr level (remove or blocklist), distinct from nasdoom_queue_item_command \
-which covers NASDOOM's merged view; use whichever the operator's phrasing \
-points at (mentions Radarr/Sonarr specifically vs. just "the queue").
-- radarr_calendar / sonarr_calendar — "what's releasing/airing soon" for \
-already-tracked titles.
-- radarr_blocklist / sonarr_blocklist — see why something keeps failing to \
-grab; radarr_blocklist_remove / sonarr_blocklist_remove un-blocks a release \
-so it can be tried again (confirm-gated, reversible — can always \
-re-blocklist via queue_action if it turns out to be bad again).
-There is deliberately no delete tool in your reach — removing something \
-from the library is a bigger, more irreversible decision than anything \
-above, and isn't part of what you can do yet.
-
-For non-video content — music samples/kits, software, games, books, none \
-of which have an arr or a TMDB catalog — use nasdoom_find(query, scope) to \
-search, then nasdoom_find_grab(grab_id, ...) to download (same confirm=false \
-preview-first pattern; the preview can't re-verify the title since grab_ids \
-are single-use, so double-check it's the right result from the find call \
-before confirming). grab_ids expire in 30 minutes — if a grab comes back \
-expired, just search again. share=true on the grab routes it into the \
-shared/Transfer folder instead of your private library — only set that if \
-the operator actually wants it shared, default is private.
-
-For the friend file-share portal (files.logueos.xyz): nasdoom_share_friends_list \
-and nasdoom_share_files_list are read-only lookups. nasdoom_share_friend_create \
-makes a real account with a real password (upload=false is download-only, \
-upload=true also lets them drop new files into the shared folder — they \
-can never overwrite/delete/browse elsewhere/rename/share regardless). \
-nasdoom_share_friend_revoke removes access. Both take confirm=false|true — \
-same preview-first pattern as everything else. Creating an account hands \
-out real credentials to a real person, so read back the name to the \
-operator before confirming if there's any ambiguity about who it's for. \
-There's no tool to delete a shared file — that's a deliberate gap, ask the \
-operator to do it directly if it comes up.
-
 For anything broken that's outside these tools — a failed backup, a service \
 that's down, config drift — call escalate_to_worker with a clear \
 description, tell the operator you escalated it and why, then move on. \
-Don't try to fix system-level things yourself; you don't have the tools \
-for that, and pretending otherwise wastes their time. This includes when \
+Don't try to fix system-level things yourself. This includes when \
 the operator tells you something is broken but your own read-only check \
-says it's fine — don't just trust the tool and dismiss what they said; a \
-tool reporting "ok" doesn't mean the operator is wrong, it might mean the \
-tool isn't seeing what they're seeing. Say the discrepancy out loud and \
-escalate it for a closer look rather than resolving the conflict yourself. \
-And never hand the operator raw commands to run themselves (journalctl, \
-systemctl, anything shell-level) as your answer — that's the exact "you \
-don't have the tools for that" situation above; escalate instead of \
-outsourcing the investigation back to them.
-
-When you're recommending what to do about something outside your tools' \
-reach — especially deleting or removing anything — never suggest a manual, \
-ungated path (removing files/folders directly, running a script, editing \
-config by hand) even as a "here's how you'd do it yourself" aside. If \
-there's no tool-gated way to do it, say that plainly and either escalate it \
-or leave it for the operator to decide how, but don't hand them an \
-unaudited shortcut around the same safety rails your own tools have.
+says it's fine — say the discrepancy out loud and escalate it for a closer \
+look rather than resolving the conflict yourself. Never hand the operator \
+raw commands to run themselves (journalctl, systemctl, anything \
+shell-level) as your answer, and never suggest a manual, ungated path \
+(deleting files directly, editing config by hand) even as an aside — if \
+there's no tool-gated way to do something, say so plainly and escalate or \
+leave it to the operator.
 
 This is a live conversation with the one person who runs this NAS, not a \
 scheduled report — answer their actual question, don't pad it into a \
@@ -273,26 +193,184 @@ answer depends on live state — don't guess.
 Formatting: this renders in Telegram, not a markdown viewer. It doesn't \
 support tables in any mode, and only single *asterisks* make bold text \
 (double **asterisks** show up as literal asterisks). Never use a markdown \
-table; use short "Label: value" lines instead, one per line, grouped with \
-a blank line between sections if there are several. Keep formatting light; \
-this is a chat message, not a document.
+table; use short "Label: value" lines instead. Keep formatting light.
 
 Writing style:
 - No em-dashes. Use a period, comma, or semicolon instead.
-- No filler ("it's important to note", "when it comes to") and no hedging \
-("may potentially", "might be able to"). Say the thing or don't say it.
+- No filler ("it's important to note") and no hedging ("may potentially"). \
+Say the thing or don't say it.
 - No intensifiers standing in for a number ("significantly faster") — give \
 the actual figure, or drop the claim.
 - Before presenting two things as separate options, check they're actually \
-different. If a second candidate has the same title as the first with \
-nothing distinguishing it (same tmdb_id, same year, same everything), \
-it's the same result found twice, not two choices; present it once. If \
-you genuinely have two different things, say what makes them different \
-(the year, the edition, the id), don't just repeat the name twice.
-- Don't restate the same fact two ways in one reply. If you already said \
-something is in the library, don't also list it again in a table/section \
-below as if it were new information.
+different (year, edition, id). If nothing distinguishes them, it's the \
+same result found twice; present it once. Don't restate the same fact two \
+ways in one reply.
 """
+
+# Tools always loaded, matched to what PROMPT_CORE describes: status,
+# queue/request actions, match-fix, escalation. Everything else rides in
+# a section.
+CORE_TOOLS: set[str] = {
+    "media_status",
+    "plex_overview",
+    "plex_library_size",
+    "nasdoom_health",
+    "nasdoom_queue",
+    "nasdoom_omni_search",
+    "nasdoom_requests_overview",
+    "nasdoom_control",
+    "nasdoom_queue_command",
+    "nasdoom_queue_item_command",
+    "nasdoom_requests_action",
+    "nasdoom_match_search",
+    "nasdoom_match_apply",
+    "nas_backup_health",
+    "nas_storage_inventory",
+    "escalate_to_worker",
+}
+
+# Each section: trigger keywords (case-insensitive substring match against
+# the operator's message), prompt text appended to PROMPT_CORE, and the
+# tool names loaded alongside. Over-matching is safe (a few extra schemas);
+# under-matching is the failure mode — keep keyword lists generous, and
+# remember the core prompt tells the model what to say when a capability
+# genuinely isn't loaded.
+PROMPT_SECTIONS: dict[str, dict[str, Any]] = {
+    "library": {
+        "keywords": [
+            "add", "get ", "grab", "download", "movie", "film", "show", "series", "season",
+            "episode", "anime", "quality", "profile", "blocklist", "block list", "calendar",
+            "releas", "airing", "upcoming", "monitor", "search", "rescan", "refresh",
+            "metadata", "stuck", "failed", "radarr", "sonarr", "jellyseerr", "request",
+            "stale", "unwatched", "haven't watched", "watch",
+        ],
+        "prompt": """\
+You can manage the Radarr/Sonarr library directly, not just monitor it:
+- media_search(query) or nasdoom_omni_search(query) — find a title's \
+tmdb_id/tvdb_id first, ALWAYS, before calling nasdoom_add. The harness \
+itself rejects an id that didn't come from a real search result here — \
+never state or guess a tmdb_id/tvdb_id from your own memory; just search \
+first.
+- nasdoom_add — add a movie or series (kind: movie|tv). Leave \
+quality_profile_id and root_folder_path unset unless the operator names a \
+specific one — NASDOOM automatically routes anime to the anime \
+folder/profile and everything else to the regular library default. Don't \
+"upgrade" to a higher quality on your own judgment. search_now defaults to \
+false (adds/monitors without an immediate grab) — only set true if asked \
+to grab it now. nasdoom_profiles(kind) lists quality options if asked.
+- radarr_research_movie / sonarr_research_series — fix something already in \
+the library: search again, refresh metadata, or rescan a file on disk. Use \
+this before ever considering a delete/re-add cycle.
+- sonarr_monitor_season — "add season N of X" when the show's already in \
+Sonarr but that season isn't monitored yet.
+- radarr_queue_action / sonarr_queue_action — unstick a queue item at the \
+arr level (remove or blocklist), distinct from nasdoom_queue_item_command; \
+use whichever the operator's phrasing points at.
+- radarr_calendar / sonarr_calendar — "what's releasing/airing soon".
+- radarr_blocklist / sonarr_blocklist — see why something keeps failing to \
+grab; radarr_blocklist_remove / sonarr_blocklist_remove un-blocks a \
+release so it can be tried again (confirm-gated, reversible).
+- staleness_report — library-wide sweeps ("what haven't I watched in 6 \
+months"), not single-title lookups.
+There is deliberately no delete tool in your reach — removing something \
+from the library isn't part of what you can do yet.
+""",
+        "tools": {
+            "media_search", "nasdoom_add", "nasdoom_profiles", "radarr_research_movie",
+            "sonarr_research_series", "sonarr_monitor_season", "radarr_queue_action",
+            "sonarr_queue_action", "radarr_calendar", "sonarr_calendar", "radarr_blocklist",
+            "sonarr_blocklist", "radarr_blocklist_remove", "sonarr_blocklist_remove",
+            "radarr_overview", "sonarr_overview", "staleness_report", "jellyseerr_overview",
+        },
+    },
+    "web": {
+        "keywords": [
+            "web", "internet", "online", "look up", "lookup", "google", "error", "latest",
+            "news", "best practice", "recommend", "better", "improve", "suggestion",
+        ],
+        "prompt": """\
+For anything needing current outside information — an error message you \
+don't recognize, current best practices, a new tool worth considering — \
+use web_search (and web_fetch to read a specific result in full). Don't \
+answer from possibly-stale training knowledge when a quick search would \
+give a real answer. Proactive suggestions are fine — just be clear it's a \
+suggestion; actually adding new infrastructure is escalate_to_worker \
+territory.
+""",
+        "tools": {"web_search", "web_fetch"},
+    },
+    "find": {
+        "keywords": ["sample", "music", "software", "game", "book", "kit", "prowlarr", "usenet", "find "],
+        "prompt": """\
+For non-video content — music samples/kits, software, games, books — use \
+nasdoom_find(query, scope) to search, then nasdoom_find_grab(grab_id, ...) \
+to download (same confirm=false preview-first pattern; double-check it's \
+the right result from the find call before confirming). grab_ids expire in \
+30 minutes — if a grab comes back expired, search again. share=true routes \
+it into the shared/Transfer folder instead of the private library — only \
+set that if the operator actually wants it shared.
+""",
+        "tools": {
+            "nasdoom_find", "nasdoom_find_grab", "prowlarr_overview",
+            "prowlarr_indexer_stats", "sabnzbd_overview",
+        },
+    },
+    "share": {
+        "keywords": ["share", "portal", "friend", "account", "upload", "revoke", "files.logueos"],
+        "prompt": """\
+For the friend file-share portal (files.logueos.xyz): \
+nasdoom_share_friends_list and nasdoom_share_files_list are read-only. \
+nasdoom_share_friend_create makes a real account with a real password \
+(upload=false is download-only). nasdoom_share_friend_revoke removes \
+access. Both take confirm=false|true — same preview-first pattern. \
+Creating an account hands out real credentials, so read back the name \
+before confirming if there's any ambiguity. There's no tool to delete a \
+shared file — deliberate gap, the operator does that directly.
+""",
+        "tools": {
+            "nasdoom_share_friends_list", "nasdoom_share_files_list",
+            "nasdoom_share_friend_create", "nasdoom_share_friend_revoke",
+        },
+    },
+    "speed": {
+        "keywords": ["speed", "bandwidth", "connection", "slow", "fast"],
+        "prompt": """\
+For "what are my internet speeds" — use nas_internet_speed_test. It runs a \
+real test FROM the NAS itself, takes ~5-10s, always fresh. It consumes \
+real bandwidth (a few hundred MB), so don't call it more than once per \
+conversation unless asked to re-test.
+""",
+        "tools": {"nas_internet_speed_test"},
+    },
+    "stats": {
+        "keywords": ["who watched", "history", "viewing", "stats", "tautulli", "watched"],
+        "prompt": """\
+For viewing history and per-user stats, use tautulli_history, \
+tautulli_users, and tautulli_user_stats.
+""",
+        "tools": {"tautulli_history", "tautulli_users", "tautulli_user_stats"},
+    },
+}
+
+
+def _select_sections(text: str, active: set[str]) -> set[str]:
+    """Returns the updated sticky section set for this conversation —
+    previously active sections stay, new keyword matches join."""
+    lowered = text.lower()
+    for name, section in PROMPT_SECTIONS.items():
+        if name not in active and any(kw in lowered for kw in section["keywords"]):
+            active.add(name)
+    return active
+
+
+def _build_context(active: set[str]) -> tuple[str, set[str]]:
+    prompt_parts = [PROMPT_CORE]
+    tools = set(CORE_TOOLS)
+    for name in sorted(active):
+        section = PROMPT_SECTIONS[name]
+        prompt_parts.append(section["prompt"])
+        tools |= section["tools"]
+    return "\n".join(prompt_parts), tools
 
 # Answered directly, without going through the model, when the message is
 # exactly "/help" or "/start" (checked before run_agent_turn in
@@ -380,12 +458,23 @@ async def _handle_message(
     state: ChatState,
     model: str | None = None,
     max_tool_rounds: int | None = None,
+    force_sections: set[str] | None = None,
 ) -> ChatState:
     """Runs one turn and returns the updated chat state — on error, returns
     `state` unchanged (a failed turn shouldn't inject partial/broken state
     into the next one). `model`/`max_tool_rounds` let a caller override the
     default fast/cheap interactive model for a specific task that needs
-    more reliable multi-step reasoning (see _handle_photo_message)."""
+    more reliable multi-step reasoning (see _handle_photo_message).
+    `force_sections` pre-activates prompt/tool sections regardless of
+    keyword matching (the photo path needs library+web loaded even though
+    the synthesized task string may not hit the keyword lists)."""
+    active_sections = set(state.get("active_sections") or [])
+    if force_sections:
+        active_sections |= force_sections
+    active_sections = _select_sections(text, active_sections)
+    system_prompt, allowed_tools = _build_context(active_sections)
+    logger.info("active sections: %s (%d tools)", sorted(active_sections) or ["core-only"], len(allowed_tools))
+
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
@@ -395,10 +484,10 @@ async def _handle_message(
             run_kwargs["max_tool_rounds"] = max_tool_rounds
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             mcp_client=mcp_client,
             model=model or settings.ollama_bot_model,
-            allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
+            allowed_tools=allowed_tools & (READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS),
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
             known_entity_ids=state.get("known_entity_ids"),
@@ -423,11 +512,17 @@ async def _handle_message(
         logger.warning("agent turn produced an empty reply for message: %r", text)
         await send_message(token, chat_id, "That didn't produce a clear answer. Could you try rephrasing?")
         return ChatState(
-            history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
+            history=trim_history(new_history),
+            pending_action=new_pending_action,
+            known_entity_ids=new_known_entity_ids,
+            active_sections=sorted(active_sections),
         )
     await send_message(token, chat_id, reply)
     return ChatState(
-        history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
+        history=trim_history(new_history),
+        pending_action=new_pending_action,
+        known_entity_ids=new_known_entity_ids,
+        active_sections=sorted(active_sections),
     )
 
 
@@ -554,6 +649,7 @@ async def _handle_photo_message(
         state,
         model=PHOTO_IDENTIFY_MODEL,
         max_tool_rounds=PHOTO_IDENTIFY_MAX_TOOL_ROUNDS,
+        force_sections={"library", "web"},
     )
 
 
