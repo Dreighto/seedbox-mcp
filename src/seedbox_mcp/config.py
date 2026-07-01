@@ -64,6 +64,25 @@ class Settings(BaseSettings):
     jellyseerr_url: HttpUrl | None = None
     jellyseerr_api_key: SecretStr | None = None
 
+    # NASDOOM's BFF (~/dev/nasdoom) — tailnet-private, no auth needed at this
+    # edge. Prefer this for anything it already consolidates (queue, requests,
+    # storage-with-denominator, cross-source search) over the raw per-service
+    # tools above.
+    nasdoom_enabled: bool = False
+    nasdoom_url: HttpUrl | None = None
+
+    # NAS Ops bot (@nas_doombot) — operator-only, separate identity from
+    # NASDOOM's build-bot. Deliberately NOT named TELEGRAM_BOT_TOKEN: that
+    # generic name collides with a pre-existing shell-exported var (the Miru
+    # Dispatch bot) which pydantic-settings would silently prefer over this
+    # file's .env value — confirmed live 2026-06-30, a test digest went to
+    # the wrong bot. Scoped name avoids any future collision on this machine.
+    # nas_ops_telegram_allowed_chat_id is a hard allowlist: the polling bot
+    # silently ignores any message from a different chat, so finding the bot
+    # username on Telegram doesn't get you a reply.
+    nas_ops_telegram_bot_token: SecretStr | None = None
+    nas_ops_telegram_allowed_chat_id: int | None = None
+
     oauth_access_token_ttl: int = Field(default=3600, gt=0)
     oauth_state_path: Path = Path(".oauth_state.json")
 
@@ -74,7 +93,14 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("tautulli_api_key", "prowlarr_api_key", "sabnzbd_api_key", "jellyseerr_api_key", mode="before")
+    @field_validator(
+        "tautulli_api_key",
+        "prowlarr_api_key",
+        "sabnzbd_api_key",
+        "jellyseerr_api_key",
+        "nas_ops_telegram_bot_token",
+        mode="before",
+    )
     @classmethod
     def empty_secret_is_none(cls, value: Any) -> Any:
         if value == "":
@@ -112,6 +138,10 @@ class Settings(BaseSettings):
     @property
     def jellyseerr_base_url(self) -> str | None:
         return str(self.jellyseerr_url).rstrip("/") if self.jellyseerr_url else None
+
+    @property
+    def nasdoom_base_url(self) -> str | None:
+        return str(self.nasdoom_url).rstrip("/") if self.nasdoom_url else None
 
     def secret(self, name: str) -> str:
         value = getattr(self, name)

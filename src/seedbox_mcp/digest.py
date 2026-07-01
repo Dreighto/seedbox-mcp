@@ -5,10 +5,10 @@ import asyncio
 import logging
 
 from fastmcp import Client
-from pydantic import Field
 
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn
 from seedbox_mcp.config import Settings
+from seedbox_mcp.telegram import send_message
 
 logger = logging.getLogger("seedbox_mcp.digest")
 
@@ -21,17 +21,28 @@ SYSTEM_PROMPT = """\
 You are a NAS housekeeping assistant. You run on a schedule, not in a chat — \
 nobody is watching live, so write one self-contained report, not a conversation.
 
-You have read-only tools for: Plex/Radarr/Sonarr staleness (staleness_report, \
-media_status), and NAS storage outside the Plex library (nas_backup_health, \
-nas_storage_inventory — music samples, production kits, the general \
-transfer/drop folder).
+You have read-only tools covering the whole NAS. Prefer the nasdoom_* tools \
+where they overlap with something else — they're the NASDOOM app's own BFF, \
+already reconciled and denominator-aware, so using them keeps this digest \
+consistent with what the operator sees in the app:
+- nasdoom_health — one-call reachability rollup for all 8 services, instead \
+of media_status + prowlarr_overview + sabnzbd_overview + jellyseerr_overview \
+separately.
+- nasdoom_queue — unified SABnzbd + arr-import queue in one view.
+- nasdoom_requests_overview — friend-request state with human-readable labels.
+- nasdoom_control — storage with a real percentFull denominator on the media \
+pool (not a raw byte count).
+Use staleness_report for library-wide unwatched/stale sweeps (NASDOOM has no \
+equivalent), and nas_backup_health / nas_storage_inventory for backups and \
+the non-media dirs (Music, samples, Transfer) — also NASDOOM has no coverage \
+there.
 
 Call the tools relevant to the task you're given, then write a short plain-\
 English digest:
 - Lead with anything that needs the operator's attention (a failed/stale \
-backup, a stuck download, runaway storage growth). If nothing does, say so \
-plainly — do not invent urgency.
-- Group the rest by area (backups / media / other storage).
+backup, a stuck download, a disabled/failing indexer, runaway storage \
+growth). If nothing does, say so plainly — do not invent urgency.
+- Group the rest by area (backups / media / downloads / other storage).
 - Be concrete: name the thing, the number, the age. "3 movies added 6+ \
 months ago, never watched, 41GB" beats "some old content was found."
 - You have no write or delete tools right now — never imply you took an \
@@ -63,7 +74,8 @@ async def run_digest(task: str, model: str | None = None) -> str:
 
 DEFAULT_TASK = (
     "Run the routine NAS health check: staleness_report (movies+tv, "
-    "older_than_days=120, include_missing=true), media_status, "
+    "older_than_days=120, include_missing=true), nasdoom_health, "
+    "nasdoom_queue, nasdoom_requests_overview, nasdoom_control, "
     "nas_backup_health, and nas_storage_inventory. Summarize."
 )
 
@@ -73,10 +85,27 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run a one-shot NAS housekeeping digest.")
     parser.add_argument("--task", default=DEFAULT_TASK, help="Override the digest task prompt.")
     parser.add_argument("--model", default=None, help=f"Ollama model tag (default: {DEFAULT_DIGEST_MODEL}).")
+    parser.add_argument("--no-telegram", action="store_true", help="Print only, skip the Telegram push.")
     args = parser.parse_args()
 
     result = asyncio.run(run_digest(args.task, args.model))
     print(result)
+
+    if not args.no_telegram:
+        settings = DigestSettings()  # type: ignore[call-arg]
+        if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
+            asyncio.run(
+                send_message(
+                    settings.nas_ops_telegram_bot_token.get_secret_value(),
+                    settings.nas_ops_telegram_allowed_chat_id,
+                    result,
+                )
+            )
+        else:
+            logger.warning(
+                "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + "
+                "NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
+            )
 
 
 if __name__ == "__main__":

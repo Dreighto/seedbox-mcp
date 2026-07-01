@@ -16,6 +16,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
+from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
+from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
+from seedbox_mcp.tools.nasdoom import (
+    nasdoom_control,
+    nasdoom_health,
+    nasdoom_omni_search,
+    nasdoom_queue,
+    nasdoom_requests_overview,
+)
 from seedbox_mcp.tools.plex import plex_library_size, plex_overview
 from seedbox_mcp.tools.radarr import (
     radarr_add_movie,
@@ -34,8 +43,6 @@ from seedbox_mcp.tools.sonarr import (
     sonarr_queue_action,
     sonarr_research_series,
 )
-from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
-from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.staleness import staleness_report
 from seedbox_mcp.tools.status import media_status
 from seedbox_mcp.tools.tautulli import tautulli_history, tautulli_user_stats, tautulli_users
@@ -556,6 +563,45 @@ def create_mcp(services: Services) -> FastMCP:
         staleness_report/media_status can't give on their own."""
         return await jellyseerr_overview(services, limit)
 
+    async def nasdoom_health_tool() -> dict[str, Any]:
+        """NASDOOM BFF's own service rollup — reachability + latency for all
+        8 upstreams (Plex/Sonarr/Radarr/Prowlarr/SABnzbd/nzbget/Tautulli/
+        Jellyseerr) in one call. Prefer this over calling media_status +
+        prowlarr_overview + sabnzbd_overview + jellyseerr_overview
+        separately when you just need a quick "is everything up" check."""
+        return await nasdoom_health(services)
+
+    async def nasdoom_queue_tool() -> dict[str, Any]:
+        """NASDOOM's unified download/import queue — merges SABnzbd and the
+        arr import queues into one view with global speed/pause state and
+        per-item progress. Prefer this over sabnzbd_overview alone; it also
+        covers items already past SAB and sitting in Radarr/Sonarr import."""
+        return await nasdoom_queue(services)
+
+    async def nasdoom_omni_search_tool(query: str) -> dict[str, Any]:
+        """Cross-source title search (Jellyseerr/Radarr/Sonarr reconciled) —
+        answers "do we have X" / "is X available" for a specific title, with
+        presence already resolved (inLibrary/managed/acquirable). This is
+        the right tool for a one-off title lookup; staleness_report is for
+        library-wide sweeps, not single-title questions."""
+        return await nasdoom_omni_search(services, query)
+
+    async def nasdoom_requests_overview_tool(filter: str = "pending", take: int = 20) -> dict[str, Any]:
+        """NASDOOM's friend-request concierge view — who requested what and
+        its human-readable state (needs_approval, awaiting_release,
+        downloading, available, etc). filter: all|pending|approved|declined
+        |processing|available. Prefer this over jellyseerr_overview for
+        anything request-shaped; it has friendlier state labels."""
+        return await nasdoom_requests_overview(services, filter, take)
+
+    async def nasdoom_control_tool() -> dict[str, Any]:
+        """Operator status: quality-profile/root-folder config for both arrs,
+        and storage with a real denominator (percentFull, sourced from arr
+        diskspace on the media pool — not a raw `du`). Prefer this over
+        nas_storage_inventory for "how full is the media pool"; that tool is
+        for the non-media watched dirs (Music/samples/Transfer) only."""
+        return await nasdoom_control(services)
+
     register_tool(mcp, "media_status", READ_ONLY, media_status_tool)
     register_tool(mcp, "radarr_overview", READ_ONLY, radarr_overview_tool)
     register_tool(mcp, "sonarr_overview", READ_ONLY, sonarr_overview_tool)
@@ -581,6 +627,11 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
     register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)
     register_tool(mcp, "jellyseerr_overview", READ_ONLY, jellyseerr_overview_tool)
+    register_tool(mcp, "nasdoom_health", READ_ONLY, nasdoom_health_tool)
+    register_tool(mcp, "nasdoom_queue", READ_ONLY, nasdoom_queue_tool)
+    register_tool(mcp, "nasdoom_omni_search", READ_ONLY, nasdoom_omni_search_tool)
+    register_tool(mcp, "nasdoom_requests_overview", READ_ONLY, nasdoom_requests_overview_tool)
+    register_tool(mcp, "nasdoom_control", READ_ONLY, nasdoom_control_tool)
     return mcp
 
 

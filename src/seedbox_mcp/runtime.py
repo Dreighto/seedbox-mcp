@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from seedbox_mcp.clients.arr import ArrClient
+from seedbox_mcp.clients.nasdoom import NasdoomClient
 from seedbox_mcp.clients.plex import PlexClient
 from seedbox_mcp.clients.sabnzbd import SabnzbdClient
 from seedbox_mcp.clients.tautulli import TautulliClient
@@ -22,6 +23,7 @@ class Services:
     prowlarr: ArrClient | None = None
     sabnzbd: SabnzbdClient | None = None
     jellyseerr: ArrClient | None = None
+    nasdoom: NasdoomClient | None = None
 
 
 def build_services(settings: Settings) -> Services:
@@ -40,6 +42,9 @@ def build_services(settings: Settings) -> Services:
     jellyseerr = None
     if settings.jellyseerr_enabled and settings.jellyseerr_base_url and settings.jellyseerr_api_key:
         jellyseerr = ArrClient(settings.jellyseerr_base_url, settings.jellyseerr_api_key.get_secret_value())
+    nasdoom = None
+    if settings.nasdoom_enabled and settings.nasdoom_base_url:
+        nasdoom = NasdoomClient(settings.nasdoom_base_url)
     return Services(
         settings=settings,
         radarr=ArrClient(settings.radarr_base_url, settings.radarr_api_key.get_secret_value()),
@@ -49,4 +54,5 @@ def build_services(settings: Settings) -> Services:
         prowlarr=prowlarr,
         sabnzbd=sabnzbd,
         jellyseerr=jellyseerr,
+        nasdoom=nasdoom,
     )
