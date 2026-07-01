@@ -32,6 +32,10 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_queue_item_command,
     nasdoom_requests_action,
     nasdoom_requests_overview,
+    nasdoom_share_files_list,
+    nasdoom_share_friend_create,
+    nasdoom_share_friend_revoke,
+    nasdoom_share_friends_list,
 )
 from seedbox_mcp.tools.plex import plex_library_size, plex_overview
 from seedbox_mcp.tools.radarr import (
@@ -688,6 +692,43 @@ def create_mcp(services: Services) -> FastMCP:
         and disk space for real, so don't skip the preview."""
         return await nasdoom_find_grab(services, grab_id, share, confirm)
 
+    async def nasdoom_share_friends_list_tool() -> dict[str, Any]:
+        """List friend accounts on the file-share portal (files.logueos.xyz)
+        — who has access, not what they've uploaded (see
+        nasdoom_share_files_list for that)."""
+        return await nasdoom_share_friends_list(services)
+
+    async def nasdoom_share_files_list_tool() -> dict[str, Any]:
+        """List what's currently in the shared /Transfer folder — name,
+        size, whether it's a directory, last modified."""
+        return await nasdoom_share_files_list(services)
+
+    async def nasdoom_share_friend_create_tool(
+        name: str, upload: bool = False, confirm: bool = False
+    ) -> dict[str, Any]:
+        """Create a friend account for the file-share portal. Download-only
+        by default (upload=false) — set upload=true to let them drop new
+        files into /Transfer too (they still can't overwrite/delete
+        anything, browse elsewhere, rename, or share, regardless of upload).
+        Returns {username, password} on success — that's a real login you
+        need to hand to the person, not something to lose track of.
+
+        Two-step: confirm=false (default) echoes back the name/upload
+        setting, no account is created. confirm=true creates it for real —
+        this hands out real access, so make sure the name is right."""
+        return await nasdoom_share_friend_create(services, name, upload, confirm)
+
+    async def nasdoom_share_friend_revoke_tool(friend_id: str, confirm: bool = False) -> dict[str, Any]:
+        """Revoke a friend's access to the file-share portal. Get friend_id
+        from nasdoom_share_friends_list. Reversible in the sense that you
+        can recreate the account, but the old password is gone and a new
+        one gets generated.
+
+        Two-step: confirm=false (default) looks up the friend by ID so you
+        can verify it's the right person (friend_found=false means the ID
+        doesn't match anyone — don't proceed). confirm=true revokes."""
+        return await nasdoom_share_friend_revoke(services, friend_id, confirm)
+
     async def escalate_to_worker_tool(
         issue: str, worker: str = DEFAULT_ESCALATION_WORKER, target_repo: str = DEFAULT_TARGET_REPO
     ) -> dict[str, Any]:
@@ -741,6 +782,10 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_match_apply", WRITE, nasdoom_match_apply_tool)
     register_tool(mcp, "nasdoom_find", READ_ONLY, nasdoom_find_tool)
     register_tool(mcp, "nasdoom_find_grab", WRITE, nasdoom_find_grab_tool)
+    register_tool(mcp, "nasdoom_share_friends_list", READ_ONLY, nasdoom_share_friends_list_tool)
+    register_tool(mcp, "nasdoom_share_files_list", READ_ONLY, nasdoom_share_files_list_tool)
+    register_tool(mcp, "nasdoom_share_friend_create", WRITE, nasdoom_share_friend_create_tool)
+    register_tool(mcp, "nasdoom_share_friend_revoke", WRITE, nasdoom_share_friend_revoke_tool)
     register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 

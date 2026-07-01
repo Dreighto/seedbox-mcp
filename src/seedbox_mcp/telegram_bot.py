@@ -97,6 +97,18 @@ expired, just search again. share=true on the grab routes it into the \
 shared/Transfer folder instead of your private library — only set that if \
 the operator actually wants it shared, default is private.
 
+For the friend file-share portal (files.logueos.xyz): nasdoom_share_friends_list \
+and nasdoom_share_files_list are read-only lookups. nasdoom_share_friend_create \
+makes a real account with a real password (upload=false is download-only, \
+upload=true also lets them drop new files into the shared folder — they \
+can never overwrite/delete/browse elsewhere/rename/share regardless). \
+nasdoom_share_friend_revoke removes access. Both take confirm=false|true — \
+same preview-first pattern as everything else. Creating an account hands \
+out real credentials to a real person, so read back the name to the \
+operator before confirming if there's any ambiguity about who it's for. \
+There's no tool to delete a shared file — that's a deliberate gap, ask the \
+operator to do it directly if it comes up.
+
 For anything broken that's outside these tools — a failed backup, a service \
 that's down, config drift — call escalate_to_worker with a clear \
 description, tell the operator you escalated it and why, then move on. \

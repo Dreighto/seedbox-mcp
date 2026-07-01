@@ -222,3 +222,73 @@ async def nasdoom_find_grab(
         return ToolResponse.success({"dry_run": False, **result})
 
     return await safe_tool(run)
+
+
+# ── Friend-portal (Filebrowser share, files.logueos.xyz) ───────────────────
+# Deliberately no file-delete tool here — removing a shared file is
+# irreversible content loss (Tier 3 territory), same bar as media delete /
+# storage cleanup, which this harness doesn't have a strong-enough
+# preview/confirm pattern for yet. Friend create/revoke is reversible
+# (revoke, then recreate if wrong) so it fits this tier; a file delete
+# doesn't.
+
+
+async def nasdoom_share_friends_list(services: Services) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        return ToolResponse.success(await services.nasdoom.get("/v1/share/friends"))
+
+    return await safe_tool(run)
+
+
+async def nasdoom_share_files_list(services: Services) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        return ToolResponse.success(await services.nasdoom.get("/v1/share/files"))
+
+    return await safe_tool(run)
+
+
+async def nasdoom_share_friend_create(
+    services: Services, name: str, upload: bool = False, confirm: bool = False
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if not confirm:
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "would_apply": {"name": name, "upload": upload},
+                    "note": "Creates a real account with a real password that gets handed to "
+                    "someone — make sure the name is right before confirming.",
+                }
+            )
+        result = await services.nasdoom.post("/v1/share/friends", {"name": name, "upload": upload})
+        return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)
+
+
+async def nasdoom_share_friend_revoke(services: Services, friend_id: str, confirm: bool = False) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if not confirm:
+            friends = await services.nasdoom.get("/v1/share/friends")
+            friend_list = friends.get("friends", []) if isinstance(friends, dict) else []
+            matched = next((f for f in friend_list if str(f.get("id")) == str(friend_id)), None)
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "matched_friend": matched,
+                    "friend_found": matched is not None,
+                    "would_apply": {"friend_id": friend_id},
+                }
+            )
+        result = await services.nasdoom.delete(f"/v1/share/friends/{friend_id}")
+        return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)

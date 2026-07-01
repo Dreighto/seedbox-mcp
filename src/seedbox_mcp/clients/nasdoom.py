@@ -27,6 +27,9 @@ class NasdoomClient:
     async def post(self, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         return await self._request("POST", path, json_body=json_body)
 
+    async def delete(self, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
+        return await self._request("DELETE", path, json_body=json_body)
+
     async def _request(
         self,
         method: str,

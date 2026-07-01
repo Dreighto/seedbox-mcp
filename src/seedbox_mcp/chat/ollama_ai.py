@@ -50,6 +50,8 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_control",
     "nasdoom_match_search",
     "nasdoom_find",
+    "nasdoom_share_friends_list",
+    "nasdoom_share_files_list",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview
@@ -68,6 +70,8 @@ ACTION_TOOLS: set[str] = {
     "nasdoom_requests_action",
     "nasdoom_match_apply",
     "nasdoom_find_grab",
+    "nasdoom_share_friend_create",
+    "nasdoom_share_friend_revoke",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
