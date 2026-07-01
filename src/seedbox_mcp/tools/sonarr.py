@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from seedbox_mcp.errors import MediaMcpError
@@ -387,6 +388,80 @@ async def sonarr_queue_action(
             bool_params({"removeFromClient": False, "blocklist": blocklist}),
         )
         return ToolResponse.success({"dry_run": False, "actioned": preview})
+
+    return await safe_tool(run)
+
+
+async def sonarr_calendar(services: Services, days_ahead: int = 14) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if days_ahead <= 0 or days_ahead > 90:
+            raise MediaMcpError("validation", "days_ahead must be between 1 and 90.")
+        start = datetime.now(UTC).date()
+        end = start + timedelta(days=days_ahead)
+        calendar = await services.sonarr.get(
+            "/api/v3/calendar",
+            {"start": start.isoformat(), "end": end.isoformat(), "includeSeries": "true"},
+        )
+        episodes = sorted(_as_list(calendar), key=lambda e: e.get("airDateUtc") or "")
+        return ToolResponse.success(
+            {
+                "window": {"start": start.isoformat(), "end": end.isoformat()},
+                "episodes": [
+                    {
+                        "sonarr_id": e.get("seriesId"),
+                        "series_title": (e.get("series") or {}).get("title"),
+                        "episode_title": e.get("title"),
+                        "season_number": e.get("seasonNumber"),
+                        "episode_number": e.get("episodeNumber"),
+                        "air_date": e.get("airDate"),
+                        "has_file": e.get("hasFile"),
+                        "monitored": e.get("monitored"),
+                    }
+                    for e in episodes
+                ],
+            }
+        )
+
+    return await safe_tool(run)
+
+
+async def sonarr_blocklist(services: Services, limit: int = 20) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        bounded = clamp_limit(limit, default=20, maximum=100)
+        blocklist = await services.sonarr.get(
+            "/api/v3/blocklist",
+            {"page": 1, "pageSize": bounded, "sortKey": "date", "sortDirection": "descending"},
+        )
+        records = _records(blocklist)
+        total = blocklist.get("totalRecords") if isinstance(blocklist, dict) else len(records)
+        return ToolResponse.success(
+            {
+                "total_records": total,
+                "items": [
+                    {
+                        "blocklist_id": r.get("id"),
+                        "sonarr_id": r.get("seriesId"),
+                        "release_title": r.get("sourceTitle"),
+                        "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                        "blocked_at": r.get("date"),
+                        "reason": r.get("message"),
+                    }
+                    for r in records
+                ],
+            }
+        )
+
+    return await safe_tool(run)
+
+
+async def sonarr_blocklist_remove(services: Services, blocklist_id: int, confirm: bool = False) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not blocklist_id:
+            raise MediaMcpError("validation", "sonarr_blocklist_remove requires blocklist_id.")
+        if not confirm:
+            return ToolResponse.success({"dry_run": True, "would_remove": {"blocklist_id": blocklist_id}})
+        await services.sonarr.delete(f"/api/v3/blocklist/{blocklist_id}")
+        return ToolResponse.success({"dry_run": False, "removed": {"blocklist_id": blocklist_id}})
 
     return await safe_tool(run)
 

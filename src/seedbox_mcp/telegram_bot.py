@@ -37,19 +37,22 @@ POLL_TIMEOUT_S = 30
 # changes. Plain JSON, not a database — this is a handful of KB for one
 # operator's conversation, not a scaling concern.
 #
-# Per-chat value is {"history": [...], "pending_action": {...} | null} —
-# pending_action travels alongside history because it's the same kind of
-# per-conversation state (see ollama_ai.run_agent_turn's pending_action
-# param): the single action-tool preview the bot is currently allowed to
-# execute on a matching confirm=true. Losing it on restart would just mean
-# an in-flight "yes" fails closed and asks for a fresh preview — an
-# ok-either-way default rather than a real problem.
+# Per-chat value is {"history": [...], "pending_action": {...} | null,
+# "known_entity_ids": {...}} — pending_action and known_entity_ids travel
+# alongside history because they're the same kind of per-conversation state
+# (see ollama_ai.run_agent_turn's params of the same names): the single
+# action-tool preview currently confirmable, and the set of entity ids
+# (tmdb_id, tvdb_id, ...) actually observed from real tool results so a
+# later write can't reference an invented one. Losing either on restart just
+# means an in-flight confirm/id-reference fails closed and needs a fresh
+# preview/lookup — an ok-either-way default rather than a real problem.
 HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_history.json"
 
 
 class ChatState(dict[str, Any]):
-    """{"history": list[dict], "pending_action": dict | None} — a thin alias
-    so callers don't have to spell out the shape every time."""
+    """{"history": list[dict], "pending_action": dict | None,
+    "known_entity_ids": dict[str, list[int]]} — a thin alias so callers
+    don't have to spell out the shape every time."""
 
 
 def _load_chat_states() -> dict[int, ChatState]:
@@ -68,10 +71,14 @@ def _load_chat_states() -> dict[int, ChatState]:
             continue
         if isinstance(value, list):
             # Pre-pending-action-gate format — a bare history list. Treat as
-            # no pending action rather than guessing at one from old data.
-            states[key] = ChatState(history=value, pending_action=None)
+            # no pending action / no known ids rather than guessing from old data.
+            states[key] = ChatState(history=value, pending_action=None, known_entity_ids={})
         elif isinstance(value, dict):
-            states[key] = ChatState(history=value.get("history", []), pending_action=value.get("pending_action"))
+            states[key] = ChatState(
+                history=value.get("history", []),
+                pending_action=value.get("pending_action"),
+                known_entity_ids=value.get("known_entity_ids", {}),
+            )
     return states
 
 
@@ -142,6 +149,42 @@ contain the actual value your own question was asking for, ask again instead \
 of picking one — don't treat generic agreement as license to fill in a \
 specific number yourself.
 
+You can manage the Radarr/Sonarr library directly, not just monitor it:
+- media_search(query) or nasdoom_omni_search(query) — find a title's \
+tmdb_id/tvdb_id first, ALWAYS, before calling nasdoom_add. The harness \
+itself rejects an id that didn't come from a real search result here — \
+never state or guess a tmdb_id/tvdb_id from your own memory, even if you're \
+confident you know it; if you do, the call gets blocked and you'll have to \
+search anyway, so just search first.
+- nasdoom_add — add a movie or series (kind: movie|tv). Leave \
+quality_profile_id and root_folder_path unset unless the operator names a \
+specific one — NASDOOM automatically routes anime to the anime \
+folder/profile and everything else to the regular library default, which \
+is right far more often than a single fixed default would be. Don't \
+"upgrade" to a higher quality on your own judgment; the default is the \
+default until the operator says otherwise. search_now defaults to false \
+(adds/monitors without an immediate grab) — only set true if asked to grab \
+it now, not just track it. If the operator wants to see quality options \
+first, nasdoom_profiles(kind) lists them.
+- radarr_research_movie / sonarr_research_series — fix something already in \
+the library: search again, refresh metadata, or rescan a file already on \
+disk. Use this before ever considering a delete/re-add cycle.
+- sonarr_monitor_season — "add season N of X" when the show's already in \
+Sonarr but that season isn't monitored yet.
+- radarr_queue_action / sonarr_queue_action — unstick a queue item at the \
+arr level (remove or blocklist), distinct from nasdoom_queue_item_command \
+which covers NASDOOM's merged view; use whichever the operator's phrasing \
+points at (mentions Radarr/Sonarr specifically vs. just "the queue").
+- radarr_calendar / sonarr_calendar — "what's releasing/airing soon" for \
+already-tracked titles.
+- radarr_blocklist / sonarr_blocklist — see why something keeps failing to \
+grab; radarr_blocklist_remove / sonarr_blocklist_remove un-blocks a release \
+so it can be tried again (confirm-gated, reversible — can always \
+re-blocklist via queue_action if it turns out to be bad again).
+There is deliberately no delete tool in your reach — removing something \
+from the library is a bigger, more irreversible decision than anything \
+above, and isn't part of what you can do yet.
+
 For non-video content — music samples/kits, software, games, books, none \
 of which have an arr or a TMDB catalog — use nasdoom_find(query, scope) to \
 search, then nasdoom_find_grab(grab_id, ...) to download (same confirm=false \
@@ -194,6 +237,68 @@ one-line answer to a one-line question is correct. Use tools whenever the \
 answer depends on live state — don't guess.
 """
 
+# Answered directly, without going through the model, when the message is
+# exactly "/help" or "/start" (checked before run_agent_turn in
+# _handle_message). Deterministic and instant: capability questions don't
+# need a model call, and a model-generated capability list risks describing
+# a tool that doesn't exist or omitting one that does. Keep this in sync by
+# hand whenever READ_ONLY_TOOLS/ACTION_TOOLS gains or loses a tool — it's a
+# curated summary for a human, not a generated dump of the tool schema.
+HELP_TEXT = """\
+I'm the NAS Ops assistant — ask me anything in plain English, no commands \
+needed except this one. Here's what I can actually do:
+
+📊 Status & health
+Plex, Radarr, Sonarr, Prowlarr, SABnzbd, Jellyseerr reachability · backup \
+health · NAS storage (Music/samples/Transfer) · a real internet speed test \
+run from the NAS itself · Prowlarr per-indexer failure stats · library \
+staleness sweeps ("what haven't I watched in months")
+
+🎬 Library — Radarr/Sonarr
+Search and check what's already tracked · add a movie or series (auto-\
+routes anime vs regular content, uses your default quality unless you name \
+one) · what's releasing/airing soon · fix a stuck item (re-search, refresh, \
+rescan) · add a missing season · see and un-block a failed/blocklisted \
+release · unstick a queue item
+
+📥 Downloads & requests
+Unified download queue (pause/resume/speedcap/cancel/reprioritize) · \
+approve or decline a pending Jellyseerr request · fix a mismatched Plex item
+
+🎵 Everything else (music samples, software, games, books)
+Search Prowlarr directly and download — the arrs don't cover this, this \
+does
+
+🔗 Friend file-share portal (files.logueos.xyz)
+List/create/revoke friend accounts (download-only or upload-enabled) · see \
+what's shared
+
+Anything with real consequences (adding content, changing settings, \
+downloading) always previews first and asks before doing it for real — I'll \
+never just go do something without showing you what's about to happen.
+
+Anything genuinely broken that I can't fix myself — a service down, a \
+config problem — I hand off to a full worker with real system access and \
+tell you I did it.
+
+Not built yet, on purpose: deleting anything from the library, general \
+storage cleanup. Those need a stronger safety pattern than what I have \
+right now.
+"""
+
+
+async def _set_bot_commands(token: str) -> None:
+    """Registers the /help command with Telegram so it shows in the client's
+    command menu — best-effort, a failure here doesn't stop the bot from
+    working, it just means the menu entry won't appear."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{TELEGRAM_API}/bot{token}/setMyCommands",
+            json={"commands": [{"command": "help", "description": "What can you do?"}]},
+        )
+    if resp.is_error:
+        logger.warning("setMyCommands failed (non-fatal): %s %s", resp.status_code, resp.text)
+
 
 class BotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
@@ -214,7 +319,7 @@ async def _handle_message(
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
     try:
-        reply, new_history, new_pending_action = await run_agent_turn(
+        reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
             system_prompt=SYSTEM_PROMPT,
             mcp_client=mcp_client,
@@ -222,6 +327,7 @@ async def _handle_message(
             allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
+            known_entity_ids=state.get("known_entity_ids"),
             ollama_url=settings.ollama_url,
         )
         logger.info("reply: %r", reply)
@@ -234,7 +340,9 @@ async def _handle_message(
         )
         return state
     await send_message(token, chat_id, reply)
-    return ChatState(history=trim_history(new_history), pending_action=new_pending_action)
+    return ChatState(
+        history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
+    )
 
 
 async def run_bot() -> None:
@@ -244,6 +352,7 @@ async def run_bot() -> None:
     token = settings.nas_ops_telegram_bot_token.get_secret_value()
     allowed_chat_id = settings.nas_ops_telegram_allowed_chat_id
 
+    await _set_bot_commands(token)
     chat_states = _load_chat_states()
     logger.info(
         "NAS Ops bot polling started (model=%s, %d prior turns loaded)",
@@ -284,7 +393,14 @@ async def run_bot() -> None:
                 if not text:
                     continue
                 logger.info("message: %r", text)
-                state = chat_states.get(allowed_chat_id, ChatState(history=[], pending_action=None))
+                if text.strip().split()[0].split("@")[0] in ("/help", "/start"):
+                    # Deterministic, no model call — see HELP_TEXT's own
+                    # comment for why this bypasses the LLM entirely.
+                    await send_message(token, allowed_chat_id, HELP_TEXT)
+                    continue
+                state = chat_states.get(
+                    allowed_chat_id, ChatState(history=[], pending_action=None, known_entity_ids={})
+                )
                 chat_states[allowed_chat_id] = await _handle_message(settings, token, allowed_chat_id, text, state)
                 _save_chat_states(chat_states)
 

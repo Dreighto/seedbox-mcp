@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import time
@@ -54,6 +55,12 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_find",
     "nasdoom_share_friends_list",
     "nasdoom_share_files_list",
+    "radarr_calendar",
+    "sonarr_calendar",
+    "radarr_blocklist",
+    "sonarr_blocklist",
+    "prowlarr_indexer_stats",
+    "nasdoom_profiles",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview
@@ -64,8 +71,24 @@ READ_ONLY_TOOLS: set[str] = {
 # (spends bandwidth/disk, not reversible in the undo sense) but got folded
 # in once the preview/audit/rate-limit machinery existed to gate it properly
 # — the safety mechanism, not the tool's reversibility, is what earns a spot
-# here now. Media delete / storage cleanup still deliberately NOT here —
-# destructive actions warrant a stronger bar than this tier's, not built yet.
+# here now. nasdoom_add (2026-07-01, operator request) adds real,
+# non-trivial library content — deliberate scope increase for THIS bot
+# specifically (operator-only, hard chat_id allowlist): the plan for the
+# eventual friend-facing bot is to start from this same tool surface and
+# remove capability, not build a separate one from scratch, so
+# add/research/queue-action/blocklist-remove land here now even though a
+# friend-facing variant would likely drop several of them. nasdoom_add is
+# used INSTEAD OF the raw radarr_add_movie/sonarr_add_series (still
+# registered on the MCP server, deliberately not in this set) — NASDOOM's
+# endpoint routes anime vs regular content to the correct root
+# folder/profile automatically; the raw tools take a single hardcoded
+# default regardless of content type and would mis-route anime into the
+# wrong folder (a real bug NASDOOM's own implementation already found and
+# fixed — see tools/nasdoom.py's nasdoom_add docstring). Don't re-add the
+# raw tools here without solving that routing problem first.
+# radarr_delete_movie/sonarr_delete_series (DESTRUCTIVE, irreversible) and
+# general storage cleanup are still deliberately NOT here — that bar is
+# higher than this tier's, not built yet.
 ACTION_TOOLS: set[str] = {
     "nasdoom_queue_command",
     "nasdoom_queue_item_command",
@@ -74,6 +97,14 @@ ACTION_TOOLS: set[str] = {
     "nasdoom_find_grab",
     "nasdoom_share_friend_create",
     "nasdoom_share_friend_revoke",
+    "nasdoom_add",
+    "radarr_research_movie",
+    "sonarr_research_series",
+    "sonarr_monitor_season",
+    "radarr_queue_action",
+    "sonarr_queue_action",
+    "radarr_blocklist_remove",
+    "sonarr_blocklist_remove",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
@@ -81,6 +112,51 @@ ACTION_TOOLS: set[str] = {
 # READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS deliberately rather than
 # getting it bundled into either tier by accident.
 ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
+
+# Entity-ID provenance gate — generalizes the same "don't trust the model's
+# own regeneration, verify against real state" principle behind
+# pending_action, applied to a different failure mode: instead of a
+# fabricated ACTION, this catches a fabricated ARGUMENT — an id-shaped value
+# (tmdb_id, tvdb_id, ...) the model invented or recalled from training data
+# instead of getting it from an actual tool result in this conversation. A
+# docstring saying "must come from media_search, never recall or construct
+# one" is a request, not an enforcement — this is the enforcement. Extend
+# both dicts together whenever a new tool takes an entity id that should
+# always trace back to a real lookup: add the tool+param here, and make sure
+# whatever tool actually returns that id uses a matching key name (or add
+# the alternate spelling to ENTITY_ID_RESULT_KEYS).
+ENTITY_ID_PARAMS: dict[str, set[str]] = {
+    "nasdoom_add": {"tmdb_id", "tvdb_id"},
+}
+ENTITY_ID_RESULT_KEYS: dict[str, set[str]] = {
+    # "tmdb"/"tvdb" (bare) cover nasdoom_omni_search's nested {"ids": {"tmdb":
+    # ..., "tvdb": ...}} shape — found live: without these, a correct
+    # search-then-add flow through omni_search got permanently blocked by
+    # this same gate, since its ids never matched the tmdb_id/tmdbId-only
+    # alias list. Verify any NEW search tool's actual key shape live before
+    # assuming it matches — don't guess from the tool's own docstring.
+    "tmdb_id": {"tmdb_id", "tmdbId", "tmdb"},
+    "tvdb_id": {"tvdb_id", "tvdbId", "tvdb"},
+}
+
+
+def _scan_for_entity_ids(obj: Any, known: dict[str, list[int]]) -> None:
+    """Recursively walk a parsed tool-result JSON structure, recording any
+    value found under a key in ENTITY_ID_RESULT_KEYS into `known` (mutated
+    in place). Runs after every successful tool call, not just ones on the
+    ENTITY_ID_PARAMS tools — an id can legitimately surface from a read-only
+    lookup several turns before it's used in a write."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            for canonical, aliases in ENTITY_ID_RESULT_KEYS.items():
+                if key in aliases and isinstance(value, int) and not isinstance(value, bool):
+                    bucket = known.setdefault(canonical, [])
+                    if value not in bucket:
+                        bucket.append(value)
+            _scan_for_entity_ids(value, known)
+    elif isinstance(obj, list):
+        for item in obj:
+            _scan_for_entity_ids(item, known)
 
 
 def mcp_tool_to_ollama(tool: Any) -> dict[str, Any]:
@@ -194,13 +270,14 @@ async def run_agent_turn(
     escalation_tools: set[str] | None = None,
     history: list[dict[str, Any]] | None = None,
     pending_action: dict[str, Any] | None = None,
+    known_entity_ids: dict[str, list[int]] | None = None,
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
-) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, list[int]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
     server exposes. Returns (final assistant text, updated history, updated
-    pending_action).
+    pending_action, updated known_entity_ids).
 
     `history`: prior conversation turns (user/assistant/tool — NOT the system
     message, that's added fresh each call so a prompt change takes effect
@@ -246,9 +323,18 @@ async def run_agent_turn(
     returned value the same way `history` is persisted — it's per-conversation
     state, not global.
 
+    `known_entity_ids`: {param_name: [values seen in real tool results this
+    conversation]} — see ENTITY_ID_PARAMS/ENTITY_ID_RESULT_KEYS. Updated
+    automatically after every successful tool call (scans the result for
+    tmdb_id/tvdb_id/etc.); enforced before executing any ACTION_TOOLS call
+    listed in ENTITY_ID_PARAMS — an id-shaped argument that was never
+    actually observed gets rejected rather than trusted. Same persistence
+    contract as `pending_action`.
+
     Caps at MAX_TOOL_ROUNDS tool round-trips per call so a confused model
     can't loop forever within one turn."""
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
+    known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS
     async with mcp_client:
         raw_tools = await mcp_client.list_tools()
@@ -284,7 +370,7 @@ async def run_agent_turn(
                 # messages[0] is the system prompt, not part of persisted
                 # history — everything from index 1 on (this turn's user
                 # message onward) is what the next call should replay.
-                return content, messages[1:], pending_action
+                return content, messages[1:], pending_action, known_entity_ids
 
             messages.append({"role": "assistant", "content": content, "tool_calls": tool_calls})
             for call in tool_calls:
@@ -358,6 +444,36 @@ async def run_agent_turn(
                 # confirm=true that just cleared the pending-action gate
                 # above (a dry-run preview doesn't write anything, so it
                 # doesn't count against the breaker or get logged as one).
+                # Entity-ID provenance gate: for tools in ENTITY_ID_PARAMS,
+                # any listed argument that's set must be a value actually
+                # observed in a real tool result this conversation — not a
+                # plausible-looking id the model recalled from training data
+                # or invented. Checked regardless of confirm=false/true (a
+                # fabricated id in a *preview* is just as wrong as in a real
+                # write — the operator would be confirming a lie).
+                required_ids = ENTITY_ID_PARAMS.get(name)
+                if required_ids:
+                    unverified = [
+                        (param, args[param])
+                        for param in required_ids
+                        if args.get(param) is not None and args[param] not in known_entity_ids.get(param, [])
+                    ]
+                    if unverified:
+                        logger.error("ollama_ai BLOCKED unverified entity id(s): %s(%s) -> %s", name, args, unverified)
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": (
+                                    '{"ok": false, "error_type": "not_permitted", "message": '
+                                    f'"{unverified[0][0]}={unverified[0][1]!r} was not found in this '
+                                    'conversation\'s search/lookup results — never invent or recall an id '
+                                    'from memory. Call media_search or nasdoom_omni_search first and use '
+                                    'the id it returns."}}'
+                                ),
+                            }
+                        )
+                        continue
+
                 is_escalation = name in escalation_tools
                 is_real_action = is_escalation or wants_confirm
 
@@ -380,6 +496,8 @@ async def run_agent_turn(
                     async with mcp_client:
                         result = await mcp_client.call_tool(name, args)
                     tool_text = extract_tool_text(result)
+                    with contextlib.suppress(json.JSONDecodeError):
+                        _scan_for_entity_ids(json.loads(tool_text), known_entity_ids)
                     if is_real_action:
                         record_action(name, args, dry_run=False, outcome="ok")
                     elif is_action_tool:
@@ -404,4 +522,4 @@ async def run_agent_turn(
 
         timeout_note = "(stopped after max tool rounds without a final answer — task may need narrowing)"
         messages.append({"role": "assistant", "content": timeout_note})
-        return timeout_note, messages[1:], pending_action
+        return timeout_note, messages[1:], pending_action, known_entity_ids

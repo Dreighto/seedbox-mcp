@@ -99,7 +99,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     # No history — each scheduled run is a fresh report, not a continuation
     # of yesterday's. Multi-turn memory is a telegram_bot.py concept.
-    text, _history, _pending_action = await run_agent_turn(
+    text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
         task,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,

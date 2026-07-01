@@ -40,6 +40,39 @@ async def prowlarr_overview(services: Services) -> dict[str, Any]:
     return await safe_tool(run)
 
 
+async def prowlarr_indexer_stats(services: Services) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        prowlarr = services.prowlarr
+        if not prowlarr:
+            return ToolResponse.failure("prowlarr_unavailable", "Prowlarr is not configured.")
+        stats = await prowlarr.get("/api/v1/indexerstats")
+        indexers = stats.get("indexers", []) if isinstance(stats, dict) else []
+        compact = [
+            {
+                "indexer_id": i.get("indexerId"),
+                "name": i.get("indexerName"),
+                "queries": i.get("numberOfQueries"),
+                "failed_queries": i.get("numberOfFailedQueries"),
+                "grabs": i.get("numberOfGrabs"),
+                "failed_grabs": i.get("numberOfFailedGrabs"),
+                "avg_response_ms": i.get("averageResponseTime"),
+                # Every VIP-expiry/quota/auth problem this harness has caught so far
+                # showed up here first (nonzero failed auth queries) — surface it
+                # explicitly rather than making the caller notice a nonzero field
+                # buried in the raw stats.
+                "failed_auth_queries": i.get("numberOfFailedAuthQueries"),
+                "likely_needs_attention": bool(i.get("numberOfFailedAuthQueries"))
+                or (i.get("numberOfQueries") or 0) > 0
+                and (i.get("numberOfFailedQueries") or 0) / max(i.get("numberOfQueries") or 1, 1) > 0.5,
+            }
+            for i in indexers
+            if isinstance(i, dict)
+        ]
+        return ToolResponse.success({"indexers": compact})
+
+    return await safe_tool(run)
+
+
 async def sabnzbd_overview(services: Services) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         sabnzbd = services.sabnzbd

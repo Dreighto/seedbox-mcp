@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from seedbox_mcp.errors import MediaMcpError
@@ -299,6 +300,74 @@ async def radarr_queue_action(
             bool_params({"removeFromClient": False, "blocklist": blocklist}),
         )
         return ToolResponse.success({"dry_run": False, "actioned": preview})
+
+    return await safe_tool(run)
+
+
+async def radarr_calendar(services: Services, days_ahead: int = 14) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if days_ahead <= 0 or days_ahead > 90:
+            raise MediaMcpError("validation", "days_ahead must be between 1 and 90.")
+        start = datetime.now(UTC).date()
+        end = start + timedelta(days=days_ahead)
+        calendar = await services.radarr.get(
+            "/api/v3/calendar", {"start": start.isoformat(), "end": end.isoformat()}
+        )
+        movies = sorted(_as_list(calendar), key=lambda m: m.get("physicalRelease") or m.get("digitalRelease") or "")
+        return ToolResponse.success(
+            {
+                "window": {"start": start.isoformat(), "end": end.isoformat()},
+                "movies": [
+                    {
+                        **compact_movie(m),
+                        "physical_release": m.get("physicalRelease"),
+                        "digital_release": m.get("digitalRelease"),
+                    }
+                    for m in movies
+                ],
+            }
+        )
+
+    return await safe_tool(run)
+
+
+async def radarr_blocklist(services: Services, limit: int = 20) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        bounded = clamp_limit(limit, default=20, maximum=100)
+        blocklist = await services.radarr.get(
+            "/api/v3/blocklist",
+            {"page": 1, "pageSize": bounded, "sortKey": "date", "sortDirection": "descending"},
+        )
+        records = _records(blocklist)
+        total = blocklist.get("totalRecords") if isinstance(blocklist, dict) else len(records)
+        return ToolResponse.success(
+            {
+                "total_records": total,
+                "items": [
+                    {
+                        "blocklist_id": r.get("id"),
+                        "radarr_id": r.get("movieId"),
+                        "release_title": r.get("sourceTitle"),
+                        "quality": ((r.get("quality") or {}).get("quality") or {}).get("name"),
+                        "blocked_at": r.get("date"),
+                        "reason": r.get("message"),
+                    }
+                    for r in records
+                ],
+            }
+        )
+
+    return await safe_tool(run)
+
+
+async def radarr_blocklist_remove(services: Services, blocklist_id: int, confirm: bool = False) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not blocklist_id:
+            raise MediaMcpError("validation", "radarr_blocklist_remove requires blocklist_id.")
+        if not confirm:
+            return ToolResponse.success({"dry_run": True, "would_remove": {"blocklist_id": blocklist_id}})
+        await services.radarr.delete(f"/api/v3/blocklist/{blocklist_id}")
+        return ToolResponse.success({"dry_run": False, "removed": {"blocklist_id": blocklist_id}})
 
     return await safe_tool(run)
 

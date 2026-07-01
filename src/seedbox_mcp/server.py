@@ -16,11 +16,17 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
-from seedbox_mcp.tools.downloads import jellyseerr_overview, prowlarr_overview, sabnzbd_overview
+from seedbox_mcp.tools.downloads import (
+    jellyseerr_overview,
+    prowlarr_indexer_stats,
+    prowlarr_overview,
+    sabnzbd_overview,
+)
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
 from seedbox_mcp.tools.nas_network import nas_internet_speed_test
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.nasdoom import (
+    nasdoom_add,
     nasdoom_control,
     nasdoom_find,
     nasdoom_find_grab,
@@ -28,6 +34,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_match_apply,
     nasdoom_match_search,
     nasdoom_omni_search,
+    nasdoom_profiles,
     nasdoom_queue,
     nasdoom_queue_command,
     nasdoom_queue_item_command,
@@ -41,6 +48,9 @@ from seedbox_mcp.tools.nasdoom import (
 from seedbox_mcp.tools.plex import plex_library_size, plex_overview
 from seedbox_mcp.tools.radarr import (
     radarr_add_movie,
+    radarr_blocklist,
+    radarr_blocklist_remove,
+    radarr_calendar,
     radarr_delete_movie,
     radarr_delete_movies_batch,
     radarr_overview,
@@ -50,6 +60,9 @@ from seedbox_mcp.tools.radarr import (
 from seedbox_mcp.tools.search import media_search
 from seedbox_mcp.tools.sonarr import (
     sonarr_add_series,
+    sonarr_blocklist,
+    sonarr_blocklist_remove,
+    sonarr_calendar,
     sonarr_delete_series,
     sonarr_delete_series_batch,
     sonarr_monitor_season,
@@ -414,6 +427,48 @@ def create_mcp(services: Services) -> FastMCP:
         """
         return await sonarr_queue_action(services, queue_id, action, confirm)
 
+    async def radarr_calendar_tool(days_ahead: int = 14) -> dict[str, Any]:
+        """Upcoming movie releases (physical/digital) for the next N days
+        (default 14, max 90) — the right tool for "what's coming out soon" /
+        "when does X release". Only covers titles already tracked in Radarr."""
+        return await radarr_calendar(services, days_ahead)
+
+    async def sonarr_calendar_tool(days_ahead: int = 14) -> dict[str, Any]:
+        """Upcoming episode air dates for the next N days (default 14, max 90)
+        — the right tool for "what's airing this week" / "when's the next
+        episode of X". Only covers series already tracked in Sonarr."""
+        return await sonarr_calendar(services, days_ahead)
+
+    async def radarr_blocklist_tool(limit: int = 20) -> dict[str, Any]:
+        """Recently blocklisted Radarr releases (failed/rejected grabs Radarr
+        won't retry). Use to explain why a movie isn't downloading, or to find
+        a blocklist_id for radarr_blocklist_remove."""
+        return await radarr_blocklist(services, limit)
+
+    async def sonarr_blocklist_tool(limit: int = 20) -> dict[str, Any]:
+        """Recently blocklisted Sonarr releases (failed/rejected grabs Sonarr
+        won't retry). Use to explain why an episode isn't downloading, or to
+        find a blocklist_id for sonarr_blocklist_remove."""
+        return await sonarr_blocklist(services, limit)
+
+    async def radarr_blocklist_remove_tool(blocklist_id: int, confirm: bool = False) -> dict[str, Any]:
+        """Un-blocklist a Radarr release so it becomes eligible to be grabbed
+        again. Get blocklist_id from radarr_blocklist. Reversible — the
+        release can always be re-blocklisted via radarr_queue_action if
+        it turns out to be bad again.
+
+        Two-step: confirm=false (default) previews, confirm=true executes."""
+        return await radarr_blocklist_remove(services, blocklist_id, confirm)
+
+    async def sonarr_blocklist_remove_tool(blocklist_id: int, confirm: bool = False) -> dict[str, Any]:
+        """Un-blocklist a Sonarr release so it becomes eligible to be grabbed
+        again. Get blocklist_id from sonarr_blocklist. Reversible — the
+        release can always be re-blocklisted via sonarr_queue_action if
+        it turns out to be bad again.
+
+        Two-step: confirm=false (default) previews, confirm=true executes."""
+        return await sonarr_blocklist_remove(services, blocklist_id, confirm)
+
     async def radarr_delete_movie_tool(
         radarr_id: int,
         delete_files: bool = True,
@@ -605,6 +660,16 @@ def create_mcp(services: Services) -> FastMCP:
         """
         return await prowlarr_overview(services)
 
+    async def prowlarr_indexer_stats_tool() -> dict[str, Any]:
+        """Per-indexer usage/failure counters (queries, grabs, failures,
+        response time) — the right tool for "is an indexer actually working"
+        or diagnosing why a search/grab keeps failing on one source, as
+        opposed to prowlarr_overview's enabled/disabled snapshot. A nonzero
+        failed_auth_queries is the strongest signal something's actually
+        wrong (expired key/VIP, not just a transient failure) —
+        likely_needs_attention flags that plus a >50% query failure rate."""
+        return await prowlarr_indexer_stats(services)
+
     async def sabnzbd_overview_tool() -> dict[str, Any]:
         """SABnzbd download-client status: paused state, current speed/ETA,
         queue preview, and recent failed downloads from history."""
@@ -779,6 +844,50 @@ def create_mcp(services: Services) -> FastMCP:
         doesn't match anyone — don't proceed). confirm=true revokes."""
         return await nasdoom_share_friend_revoke(services, friend_id, confirm)
 
+    async def nasdoom_add_tool(
+        kind: str,
+        tmdb_id: int | None = None,
+        tvdb_id: int | None = None,
+        quality_profile_id: int | None = None,
+        root_folder_path: str | None = None,
+        monitored: bool = True,
+        search_now: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Add a movie or series to Radarr/Sonarr. kind: 'movie'|'tv'. Get
+        tmdb_id (movies) or tmdb_id/tvdb_id (tv) from media_search or
+        nasdoom_omni_search first — never recall or construct an id yourself.
+
+        Leave quality_profile_id and root_folder_path unset unless the
+        operator specifically asked for a particular one — NASDOOM
+        automatically routes anime to the anime folder/profile (detected via
+        TMDB genre+origin-language) and everything else to the regular
+        library's configured default, which is correct far more often than
+        any single hardcoded default would be. Only pass these explicitly
+        when the operator names a specific quality or location.
+
+        search_now defaults to false — adding monitors the title without
+        triggering an immediate download search, matching how the operator's
+        own Jellyseerr-driven flow behaves. Only set true if the operator
+        asks to grab it now, not just add/track it.
+
+        Two-step: confirm=false (default) previews what would be sent —
+        quality_profile_id/root_folder_path showing as omitted in the
+        preview means "NASDOOM will pick automatically", not an error.
+        confirm=true executes. Returns error=already_managed with the
+        existing arrId if it's already in the library — don't re-add."""
+        return await nasdoom_add(
+            services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
+        )
+
+    async def nasdoom_profiles_tool(kind: str) -> dict[str, Any]:
+        """List available quality profiles for 'movie' or 'tv', plus the
+        recommended default. Use this only if the operator asks what quality
+        options exist or wants something other than the default — nasdoom_add
+        already picks a sensible default automatically without calling this
+        first."""
+        return await nasdoom_profiles(services, kind)
+
     async def escalate_to_worker_tool(
         issue: str, worker: str = DEFAULT_ESCALATION_WORKER, target_repo: str = DEFAULT_TARGET_REPO
     ) -> dict[str, Any]:
@@ -812,6 +921,12 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "sonarr_delete_series_batch", DESTRUCTIVE, sonarr_delete_series_batch_tool)
     register_tool(mcp, "radarr_queue_action", WRITE, radarr_queue_action_tool)
     register_tool(mcp, "sonarr_queue_action", WRITE, sonarr_queue_action_tool)
+    register_tool(mcp, "radarr_calendar", READ_ONLY, radarr_calendar_tool)
+    register_tool(mcp, "sonarr_calendar", READ_ONLY, sonarr_calendar_tool)
+    register_tool(mcp, "radarr_blocklist", READ_ONLY, radarr_blocklist_tool)
+    register_tool(mcp, "sonarr_blocklist", READ_ONLY, sonarr_blocklist_tool)
+    register_tool(mcp, "radarr_blocklist_remove", WRITE, radarr_blocklist_remove_tool)
+    register_tool(mcp, "sonarr_blocklist_remove", WRITE, sonarr_blocklist_remove_tool)
     register_tool(mcp, "staleness_report", READ_ONLY, staleness_report_tool)
     register_tool(mcp, "tautulli_history", READ_ONLY, tautulli_history_tool)
     register_tool(mcp, "tautulli_users", READ_ONLY, tautulli_users_tool)
@@ -820,6 +935,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
     register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
+    register_tool(mcp, "prowlarr_indexer_stats", READ_ONLY, prowlarr_indexer_stats_tool)
     register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)
     register_tool(mcp, "jellyseerr_overview", READ_ONLY, jellyseerr_overview_tool)
     register_tool(mcp, "nasdoom_health", READ_ONLY, nasdoom_health_tool)
@@ -838,6 +954,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_share_files_list", READ_ONLY, nasdoom_share_files_list_tool)
     register_tool(mcp, "nasdoom_share_friend_create", WRITE, nasdoom_share_friend_create_tool)
     register_tool(mcp, "nasdoom_share_friend_revoke", WRITE, nasdoom_share_friend_revoke_tool)
+    register_tool(mcp, "nasdoom_add", WRITE, nasdoom_add_tool)
+    register_tool(mcp, "nasdoom_profiles", READ_ONLY, nasdoom_profiles_tool)
     register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 

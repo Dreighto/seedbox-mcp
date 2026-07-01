@@ -292,3 +292,78 @@ async def nasdoom_share_friend_revoke(services: Services, friend_id: str, confir
         return ToolResponse.success({"dry_run": False, **result})
 
     return await safe_tool(run)
+
+
+# ── Add to library (Radarr/Sonarr, via NASDOOM's content-aware routing) ────
+# Deliberately NOT the raw radarr_add_movie/sonarr_add_series root-folder/
+# profile params for content-type routing — NASDOOM's addTitle() already
+# solves the specific bug a naive version hits (Sonarr lists root folders as
+# ['/anime','/tv']; picking the first one silently drops regular TV into
+# /anime) by detecting anime via TMDB genre+origin-language and routing to
+# the arr's anime folder/profile, using Jellyseerr's own configured defaults
+# for everything else. Prefer this over radarr_add_movie/sonarr_add_series
+# for anything add-shaped.
+
+VALID_ADD_KINDS = {"movie", "tv"}
+
+
+async def nasdoom_add(
+    services: Services,
+    kind: str,
+    tmdb_id: int | None = None,
+    tvdb_id: int | None = None,
+    quality_profile_id: int | None = None,
+    root_folder_path: str | None = None,
+    monitored: bool = True,
+    search_now: bool = False,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if kind not in VALID_ADD_KINDS:
+            return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_ADD_KINDS)})
+        if kind == "movie" and not tmdb_id:
+            return ToolResponse.failure("validation", "movie requires tmdb_id.")
+        if kind == "tv" and not tmdb_id and not tvdb_id:
+            return ToolResponse.failure("validation", "tv requires tmdb_id or tvdb_id.")
+        body = {
+            "kind": kind,
+            "tmdbId": tmdb_id,
+            "tvdbId": tvdb_id,
+            "qualityProfileId": quality_profile_id,
+            "rootFolderPath": root_folder_path,
+            "monitored": monitored,
+            "searchNow": search_now,
+        }
+        if not confirm:
+            # No dry-run concept on NASDOOM's side (its own double-add guard
+            # only fires on the real POST) — echo back what would be sent.
+            # quality_profile_id/root_folder_path left unset means "use
+            # NASDOOM's content-aware default (anime vs regular routing)",
+            # not "no destination" — don't let an empty preview field read as
+            # an error.
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "would_add": {k: v for k, v in body.items() if v is not None},
+                    "note": "quality_profile_id/root_folder_path omitted means NASDOOM picks the "
+                    "content-aware default (anime vs regular) automatically — that's expected, not "
+                    "a missing value, unless the operator asked for a specific one.",
+                }
+            )
+        result = await services.nasdoom.post("/v1/omni/add", body)
+        return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)
+
+
+async def nasdoom_profiles(services: Services, kind: str) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if kind not in VALID_ADD_KINDS:
+            return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_ADD_KINDS)})
+        return ToolResponse.success(await services.nasdoom.get("/v1/profiles", {"kind": kind}))
+
+    return await safe_tool(run)
