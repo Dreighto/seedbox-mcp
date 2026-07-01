@@ -75,6 +75,7 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_profiles",
     "web_search",
     "web_fetch",
+    "poster_ocr",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview

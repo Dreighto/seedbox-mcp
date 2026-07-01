@@ -46,6 +46,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_share_friends_list,
 )
 from seedbox_mcp.tools.plex import plex_library_size, plex_overview
+from seedbox_mcp.tools.poster_ocr import poster_ocr
 from seedbox_mcp.tools.radarr import (
     radarr_add_movie,
     radarr_blocklist,
@@ -668,6 +669,15 @@ def create_mcp(services: Services) -> FastMCP:
         enough detail, or when the operator gives you a URL directly."""
         return await web_fetch(services, url)
 
+    async def poster_ocr_tool(image_b64: str) -> dict[str, Any]:
+        """Runs OCR (apple-node's Vision-framework service) on a base64-encoded
+        image and returns extracted text lines ranked by prominence (largest
+        text first — usually the title on a movie/show poster, but verify it
+        reads as a plausible title rather than assuming the first line is
+        always right). Follow up with media_search/nasdoom_omni_search on the
+        extracted title to check library status."""
+        return await poster_ocr(services, image_b64)
+
     async def prowlarr_overview_tool() -> dict[str, Any]:
         """Prowlarr indexer health: reachability, per-indexer enabled state,
         which indexers (if any) are disabled/failing.
@@ -958,6 +968,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
     register_tool(mcp, "web_search", READ_ONLY, web_search_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
+    register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
     register_tool(mcp, "prowlarr_indexer_stats", READ_ONLY, prowlarr_indexer_stats_tool)
     register_tool(mcp, "sabnzbd_overview", READ_ONLY, sabnzbd_overview_tool)

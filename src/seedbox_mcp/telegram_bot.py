@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from pathlib import Path
@@ -112,6 +113,14 @@ solves) while answering something else, it's fine to proactively suggest \
 it — just be clear it's a suggestion, not something you're about to do; \
 actually adding new infrastructure is escalate_to_worker territory, not \
 something you'd do yourself.
+
+If the operator sends a photo of a movie/show poster or cover, OCR already \
+ran on it before you saw this message — the task will tell you the \
+extracted text, ranked by how prominent it was on the image. Use your own \
+judgment on which line is actually the title (largest text usually is, but \
+not always — ignore taglines, cast names, studio logos) before searching; \
+say which text you're treating as the title so the operator can correct \
+you if OCR misread something.
 
 For anything about downloads, requests, or "is X available" — prefer the \
 nasdoom_* tools (the NASDOOM app's own BFF) over the raw service tools:
@@ -278,7 +287,8 @@ Search and check what's already tracked · add a movie or series (auto-\
 routes anime vs regular content, uses your default quality unless you name \
 one) · what's releasing/airing soon · fix a stuck item (re-search, refresh, \
 rescan) · add a missing season · see and un-block a failed/blocklisted \
-release · unstick a queue item
+release · unstick a queue item · send a photo of a poster/cover and I'll \
+OCR it and check if it's already in the library
 
 📥 Downloads & requests
 Unified download queue (pause/resume/speedcap/cancel/reprioritize) · \
@@ -369,6 +379,64 @@ async def _handle_message(
     )
 
 
+async def _download_telegram_photo(token: str, file_id: str) -> bytes:
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})
+        resp.raise_for_status()
+        file_path = resp.json()["result"]["file_path"]
+        resp = await http.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
+        resp.raise_for_status()
+        return resp.content
+
+
+async def _handle_photo_message(
+    settings: BotSettings, token: str, chat_id: int, photo_sizes: list[dict[str, Any]], caption: str, state: ChatState
+) -> ChatState:
+    """Downloads the photo, runs OCR deterministically (the model has no way
+    to fetch Telegram file bytes itself — this is the same "do the
+    mechanical part in code, hand the LLM only what needs judgment" pattern
+    as monitor.py's queue-resume check), then routes the extracted text
+    through the normal _handle_message pipeline so the model uses its usual
+    search/add tools and confirm-gates on the result."""
+    largest = max(photo_sizes, key=lambda p: p.get("file_size") or (p.get("width", 0) * p.get("height", 0)))
+    try:
+        image_bytes = await _download_telegram_photo(token, largest["file_id"])
+    except httpx.HTTPError:
+        logger.exception("failed to download photo from Telegram")
+        await send_message(token, chat_id, "Couldn't download that photo from Telegram — try sending it again?")
+        return state
+
+    mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
+    try:
+        async with mcp_client:
+            result = await mcp_client.call_tool("poster_ocr", {"image_b64": base64.b64encode(image_bytes).decode()})
+        ocr_text = "\n".join(b.text for b in result.content if hasattr(b, "text"))
+        ocr_data = json.loads(ocr_text).get("data", {})
+    except Exception:
+        logger.exception("poster OCR failed")
+        await send_message(token, chat_id, "Couldn't read text from that photo — the OCR service may be down.")
+        return state
+
+    texts = ocr_data.get("texts_by_prominence", [])
+    if not texts:
+        await send_message(
+            token, chat_id, "Didn't find any readable text in that photo — is it a clear shot of the poster/cover?"
+        )
+        return state
+
+    extracted = "; ".join(f'"{t["text"]}" (confidence {t.get("confidence", 0):.2f})' for t in texts[:8])
+    task = (
+        f"The operator sent a photo. OCR extracted this text, largest/most prominent first: {extracted}. "
+        f"{'They also wrote: ' + caption if caption else ''} "
+        "Figure out the likely movie/show title (the largest text is usually it, but use judgment — "
+        "ignore taglines, cast names, studio logos), then check whether it's already in the Plex library "
+        "or could be added (media_search / nasdoom_omni_search). Report what you found in plain terms, and "
+        "if it's not in the library yet, offer to add it — don't add it without the operator confirming, "
+        "same as any other add."
+    )
+    return await _handle_message(settings, token, chat_id, task, state)
+
+
 async def run_bot() -> None:
     settings = BotSettings()  # type: ignore[call-arg]
     if not settings.nas_ops_telegram_bot_token or not settings.nas_ops_telegram_allowed_chat_id:
@@ -411,8 +479,19 @@ async def run_bot() -> None:
                 message = update.get("message") or {}
                 chat = message.get("chat") or {}
                 text = message.get("text")
+                photo = message.get("photo")
                 if chat.get("id") != allowed_chat_id:
                     logger.warning("ignored message from unauthorized chat_id=%s", chat.get("id"))
+                    continue
+                if photo:
+                    logger.info("photo message: %d size(s)", len(photo))
+                    state = chat_states.get(
+                        allowed_chat_id, ChatState(history=[], pending_action=None, known_entity_ids={})
+                    )
+                    chat_states[allowed_chat_id] = await _handle_photo_message(
+                        settings, token, allowed_chat_id, photo, message.get("caption") or "", state
+                    )
+                    _save_chat_states(chat_states)
                     continue
                 if not text:
                     continue

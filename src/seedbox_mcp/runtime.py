@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from seedbox_mcp.clients.apple_ocr import AppleOcrClient
 from seedbox_mcp.clients.arr import ArrClient
 from seedbox_mcp.clients.dispatch import DispatchClient
 from seedbox_mcp.clients.nasdoom import NasdoomClient
@@ -28,6 +29,7 @@ class Services:
     nasdoom: NasdoomClient | None = None
     dispatch: DispatchClient | None = None
     ollama_web: OllamaWebClient | None = None
+    apple_ocr: AppleOcrClient | None = None
 
 
 def build_services(settings: Settings) -> Services:
@@ -59,6 +61,9 @@ def build_services(settings: Settings) -> Services:
     ollama_web = None
     if settings.ollama_web_search_api_key:
         ollama_web = OllamaWebClient(settings.ollama_web_search_api_key.get_secret_value())
+    apple_ocr = None
+    if settings.apple_ocr_enabled and settings.apple_ocr_base_url:
+        apple_ocr = AppleOcrClient(settings.apple_ocr_base_url)
     return Services(
         settings=settings,
         radarr=ArrClient(settings.radarr_base_url, settings.radarr_api_key.get_secret_value()),
@@ -71,4 +76,5 @@ def build_services(settings: Settings) -> Services:
         nasdoom=nasdoom,
         dispatch=dispatch,
         ollama_web=ollama_web,
+        apple_ocr=apple_ocr,
     )

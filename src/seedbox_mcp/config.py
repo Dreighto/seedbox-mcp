@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     nasdoom_enabled: bool = False
     nasdoom_url: HttpUrl | None = None
 
+    # apple-node's mac-ocr service (macOS Vision framework, port 18772,
+    # tailnet-private, no auth) — the same jetson-ocr-compatible service
+    # already used elsewhere in the operator's stack (Sully, the retired
+    # jetson-bridge). Verified live against a real poster before wiring in.
+    apple_ocr_enabled: bool = False
+    apple_ocr_url: HttpUrl | None = None
+
     # NAS Ops bot (@nas_doombot) — operator-only, separate identity from
     # NASDOOM's build-bot. Deliberately NOT named TELEGRAM_BOT_TOKEN: that
     # generic name collides with a pre-existing shell-exported var (the Miru
@@ -163,6 +170,10 @@ class Settings(BaseSettings):
     @property
     def nasdoom_base_url(self) -> str | None:
         return str(self.nasdoom_url).rstrip("/") if self.nasdoom_url else None
+
+    @property
+    def apple_ocr_base_url(self) -> str | None:
+        return str(self.apple_ocr_url).rstrip("/") if self.apple_ocr_url else None
 
     def secret(self, name: str) -> str:
         value = getattr(self, name)
