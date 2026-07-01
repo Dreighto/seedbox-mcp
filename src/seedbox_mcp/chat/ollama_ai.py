@@ -76,6 +76,7 @@ READ_ONLY_TOOLS: set[str] = {
     "web_search",
     "web_fetch",
     "poster_ocr",
+    "jellyseerr_search",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview
@@ -120,6 +121,7 @@ ACTION_TOOLS: set[str] = {
     "sonarr_queue_action",
     "radarr_blocklist_remove",
     "sonarr_blocklist_remove",
+    "jellyseerr_request_add",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
@@ -142,6 +144,7 @@ ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
 # the alternate spelling to ENTITY_ID_RESULT_KEYS).
 ENTITY_ID_PARAMS: dict[str, set[str]] = {
     "nasdoom_add": {"tmdb_id", "tvdb_id"},
+    "jellyseerr_request_add": {"tmdb_id"},
 }
 ENTITY_ID_RESULT_KEYS: dict[str, set[str]] = {
     # "tmdb"/"tvdb" (bare) cover nasdoom_omni_search's nested {"ids": {"tmdb":

@@ -23,6 +23,7 @@ from seedbox_mcp.tools.downloads import (
     sabnzbd_overview,
 )
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
+from seedbox_mcp.tools.jellyseerr import jellyseerr_request_add, jellyseerr_search
 from seedbox_mcp.tools.nas_network import nas_internet_speed_test
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
 from seedbox_mcp.tools.nasdoom import (
@@ -912,6 +913,38 @@ def create_mcp(services: Services) -> FastMCP:
             services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
         )
 
+    async def jellyseerr_search_tool(query: str) -> dict[str, Any]:
+        """Search Jellyseerr directly for a movie or TV title. Unlike
+        nasdoom_omni_search, this filters out anything flagged adult before
+        it ever reaches you — use this instead of nasdoom_omni_search
+        whenever the caller might be a friend-tier user, not the operator.
+        Returns tmdb_id per title — get it from here before calling
+        jellyseerr_request_add, never construct or recall an id yourself."""
+        return await jellyseerr_search(services, query)
+
+    async def jellyseerr_request_add_tool(
+        kind: str,
+        tmdb_id: int,
+        title: str,
+        year: int | None = None,
+        bulk: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Request a movie or TV series through Jellyseerr. kind: 'movie'|
+        'tv'. Get tmdb_id/title/year from jellyseerr_search first.
+
+        A single movie request is added and downloaded automatically. A TV
+        series is always routed to the operator to add themselves — set
+        bulk=true if the person is asking for several titles in one
+        message (even movies), which also routes to the operator instead
+        of auto-adding all of them. When in doubt about whether something
+        counts as bulk, set bulk=true.
+
+        Two-step: confirm=false (default) previews where this would route
+        (auto_add vs operator_review) without doing anything. confirm=true
+        executes."""
+        return await jellyseerr_request_add(services, kind, tmdb_id, title, year, bulk, confirm)
+
     async def nasdoom_profiles_tool(kind: str) -> dict[str, Any]:
         """List available quality profiles for 'movie' or 'tv', plus the
         recommended default. Use this only if the operator asks what quality
@@ -991,6 +1024,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_share_friend_revoke", WRITE, nasdoom_share_friend_revoke_tool)
     register_tool(mcp, "nasdoom_add", WRITE, nasdoom_add_tool)
     register_tool(mcp, "nasdoom_profiles", READ_ONLY, nasdoom_profiles_tool)
+    register_tool(mcp, "jellyseerr_search", READ_ONLY, jellyseerr_search_tool)
+    register_tool(mcp, "jellyseerr_request_add", WRITE, jellyseerr_request_add_tool)
     register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 

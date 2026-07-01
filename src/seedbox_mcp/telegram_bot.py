@@ -411,9 +411,20 @@ async def _handle_message(
         await send_message(
             token,
             chat_id,
-            "Something went wrong answering that — check the service log (journalctl -u seedbox-telegram-bot).",
+            "Something went wrong answering that. Check the service log (journalctl -u seedbox-telegram-bot).",
         )
         return state
+    if not reply.strip():
+        # Observed live: the model can end a turn with a tool call but no
+        # follow-up text at all, especially on a harder multi-step task.
+        # Telegram rejects an empty sendMessage outright, so without this
+        # check the operator would get either nothing or a confusing error
+        # instead of a clear signal that the turn didn't produce an answer.
+        logger.warning("agent turn produced an empty reply for message: %r", text)
+        await send_message(token, chat_id, "That didn't produce a clear answer. Could you try rephrasing?")
+        return ChatState(
+            history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
+        )
     await send_message(token, chat_id, reply)
     return ChatState(
         history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
@@ -504,6 +515,24 @@ async def _handle_photo_message(
         "instead of reconstructing 'Blades of the Guardians' (which explains both). Do not default to fame or "
         "familiarity when a candidate leaves fragments unexplained; a full reconstruction that fits everything "
         "beats a partial match to something famous.\n\n"
+        "This same check applies just as hard when the title itself is an EXACT match, not just a partial one: "
+        "if OCR also caught other credits (a director/cast name, production company, distributor, tagline, "
+        "release date) alongside the title, those credits have to actually belong to the title you're about to "
+        "name, not just be ignored because the title matched. A second real example of getting this wrong: OCR "
+        "extracted the clean title 'UnBroken' plus credits including 'BETH LANE', 'MAKEMAKE ENTERTAINMENT', and "
+        "'HEARTLAND', and a reply confidently identified this as the well-known 2014 war film 'Unbroken' "
+        "(director Angelina Jolie, Universal Pictures) - a title-only match that ignored every one of those "
+        "credits, none of which have anything to do with that film. The poster was actually for a different, "
+        "much less well-known 2023 documentary that happens to share the exact same title. If you have credit "
+        "names or a studio/production company in the extracted text, search using THOSE (e.g. 'Beth Lane "
+        "documentary UnBroken') rather than the bare title alone, since a generic title can collide with a "
+        "famous unrelated work but a specific person or company name usually won't.\n\n"
+        "Before you commit to a candidate, write out a short checklist: one line per extracted fragment, each "
+        "marked either MATCHES (explains this fragment) or CONTRADICTS/UNEXPLAINED (this fragment doesn't fit "
+        "the candidate at all). Only commit to that candidate once every fragment is marked MATCHES or you have "
+        "a specific reason a fragment is unrelated (e.g. it's a tagline, not part of the title). If anything is "
+        "still CONTRADICTS/UNEXPLAINED after that check, you don't have a real match yet, keep searching or "
+        "fall through to Step 3's honest-uncertainty path instead of naming a title anyway.\n\n"
         "Step 3 - report honestly. If Step 1/2 produces a confident full match, present it clearly as an "
         "OCR-derived best guess (not a certainty) and ask the operator to confirm, since the source text was "
         "rough. If no reconstruction produces a match that explains the fragments, say plainly that OCR wasn't "

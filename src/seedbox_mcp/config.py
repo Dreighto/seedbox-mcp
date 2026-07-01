@@ -90,6 +90,16 @@ class Settings(BaseSettings):
     nas_ops_telegram_bot_token: SecretStr | None = None
     nas_ops_telegram_allowed_chat_id: int | None = None
 
+    # Friend-facing bot (@nasdoom_helperbot) — separate identity from the
+    # operator-only bot above, same reasoning (revocation blast radius).
+    # Unlike the operator bot's single allowed chat_id, this one serves
+    # multiple people, so it's a list. A friend messaging the bot before
+    # being added here gets silently ignored, same allowlist behavior as
+    # the operator bot — the operator adds a friend's chat_id here once
+    # they've DMed the bot and the operator has seen their message.
+    nasdoom_helper_telegram_bot_token: SecretStr | None = None
+    nasdoom_helper_telegram_allowed_chat_ids: list[int] = Field(default_factory=list)
+
     # Escalation path — hands issues beyond the harness's own Tier 1 tools to
     # the LogueOS worker dispatch system (same mechanism as the operator's
     # dispatch-worker skill). Secret copied from LogueOS-Orchestrator/.env
@@ -119,12 +129,28 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("nasdoom_helper_telegram_allowed_chat_ids", mode="before")
+    @classmethod
+    def parse_comma_separated_chat_ids(cls, value: Any) -> Any:
+        # pydantic-settings JSON-decodes env values for list-typed fields
+        # before this validator runs, and a bare int env value like
+        # "8460649671" is itself valid JSON — so it arrives here already
+        # coerced to a plain int, not a string, when there's only one id.
+        if isinstance(value, int):
+            return [value]
+        if isinstance(value, str):
+            if not value.strip():
+                return []
+            return [int(part.strip()) for part in value.split(",") if part.strip()]
+        return value
+
     @field_validator(
         "tautulli_api_key",
         "prowlarr_api_key",
         "sabnzbd_api_key",
         "jellyseerr_api_key",
         "nas_ops_telegram_bot_token",
+        "nasdoom_helper_telegram_bot_token",
         "dispatch_hmac_secret",
         "ollama_web_search_api_key",
         mode="before",
