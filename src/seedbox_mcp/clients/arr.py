@@ -29,6 +29,10 @@ class ArrClient:
         result = await self._request("POST", path, json=payload)
         return result if isinstance(result, dict) else {"result": result}
 
+    async def put(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        result = await self._request("PUT", path, json=payload)
+        return result if isinstance(result, dict) else {"result": result}
+
     async def delete(
         self,
         path: str,

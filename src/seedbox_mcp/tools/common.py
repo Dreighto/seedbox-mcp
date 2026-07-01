@@ -102,9 +102,9 @@ def compact_movie(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compact_series(item: dict[str, Any]) -> dict[str, Any]:
+def compact_series(item: dict[str, Any], include_seasons: bool = False) -> dict[str, Any]:
     stats = item.get("statistics") or {}
-    return {
+    out = {
         "sonarr_id": item.get("id"),
         "title": item.get("title"),
         "year": item.get("year"),
@@ -116,6 +116,22 @@ def compact_series(item: dict[str, Any]) -> dict[str, Any]:
         "size_on_disk_gb": bytes_to_gb(stats.get("sizeOnDisk")),
         "next_airing": item.get("nextAiring"),
         "path": item.get("path"),
+    }
+    # Seasons are opt-in: only the series-listing read needs them. Delete/queue/add
+    # previews reuse this projection and would only be bloated by the per-season array.
+    if include_seasons:
+        out["seasons"] = [compact_season(s) for s in item.get("seasons") or [] if isinstance(s, dict)]
+    return out
+
+
+def compact_season(season: dict[str, Any]) -> dict[str, Any]:
+    stats = season.get("statistics") or {}
+    return {
+        "season_number": season.get("seasonNumber"),
+        "monitored": season.get("monitored"),
+        "episode_file_count": stats.get("episodeFileCount"),
+        "episode_count": stats.get("episodeCount"),
+        "size_on_disk_gb": bytes_to_gb(stats.get("sizeOnDisk")),
     }
 
 

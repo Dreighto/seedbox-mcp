@@ -175,9 +175,16 @@ Add:
 
 ```cron
 @reboot sleep 30 && bash ~/seedbox-mcp/scripts/start.sh
+*/5 * * * * /home/wawa/seedbox-mcp/scripts/watchdog.sh >> /home/wawa/seedbox-mcp/watchdog.log 2>&1
 ```
 
 The `sleep 30` gives the host time to bring up networking before the server tries to connect.
+
+`scripts/watchdog.sh` is a health-guarded self-heal: every 5 min it probes the MCP
+and chat ports and only re-runs `start.sh` when one is down (so it never bounces live
+sessions). `@reboot` alone is not enough on Whatbox — a slot migration kills the
+processes but does not re-fire `@reboot` crons, so without the watchdog the servers
+stay down until the next manual start.
 
 ### Restart the servers
 

@@ -18,6 +18,7 @@ from seedbox_mcp.tools.sonarr import (
     sonarr_add_series,
     sonarr_delete_series,
     sonarr_delete_series_batch,
+    sonarr_monitor_season,
     sonarr_overview,
     sonarr_queue_action,
     sonarr_research_series,
@@ -96,6 +97,66 @@ async def test_sonarr_add_dry_run_does_not_post(services: Services) -> None:
     assert result["ok"] is True
     assert result["data"]["dry_run"] is True
     assert services.sonarr.posts == []
+
+
+@pytest.mark.asyncio
+async def test_sonarr_overview_includes_seasons_when_requested(services: Services) -> None:
+    result = await sonarr_overview(services, include_queue=False, include_missing=False, include_seasons=True)
+    series = result["data"]["series"][0]
+    seasons = {s["season_number"]: s for s in series["seasons"]}
+    assert seasons[1]["monitored"] is True
+    assert seasons[1]["episode_file_count"] == 13
+    assert seasons[2]["monitored"] is False
+    assert seasons[2]["episode_file_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_sonarr_overview_omits_seasons_by_default(services: Services) -> None:
+    result = await sonarr_overview(services, include_queue=False, include_missing=False)
+    assert "seasons" not in result["data"]["series"][0]
+
+
+@pytest.mark.asyncio
+async def test_sonarr_monitor_season_dry_run_makes_no_change(services: Services) -> None:
+    result = await sonarr_monitor_season(services, sonarr_id=2, season_number=2, confirm=False)
+    assert result["ok"] is True
+    assert result["data"]["dry_run"] is True
+    assert result["data"]["would_monitor"]["already_monitored"] is False
+    assert services.sonarr.puts == []
+    assert services.sonarr.posts == []
+
+
+@pytest.mark.asyncio
+async def test_sonarr_monitor_season_confirm_puts_and_searches(services: Services) -> None:
+    result = await sonarr_monitor_season(services, sonarr_id=2, season_number=2, confirm=True)
+    assert result["ok"] is True
+    assert result["data"]["dry_run"] is False
+    # Series PUT back with the target season flipped monitored and series itself monitored.
+    put_path, put_body = services.sonarr.puts[0]
+    assert put_path == "/api/v3/series/2"
+    assert put_body["monitored"] is True
+    target = next(s for s in put_body["seasons"] if s["seasonNumber"] == 2)
+    assert target["monitored"] is True
+    # SeasonSearch command issued for that season.
+    post_path, post_body = services.sonarr.posts[0]
+    assert post_path == "/api/v3/command"
+    assert post_body == {"name": "SeasonSearch", "seriesId": 2, "seasonNumber": 2}
+
+
+@pytest.mark.asyncio
+async def test_sonarr_monitor_season_no_search_when_disabled(services: Services) -> None:
+    await sonarr_monitor_season(services, sonarr_id=2, season_number=2, search_now=False, confirm=True)
+    assert services.sonarr.puts
+    assert services.sonarr.posts == []
+
+
+@pytest.mark.asyncio
+async def test_sonarr_monitor_season_unknown_season_is_not_found(services: Services) -> None:
+    result = await sonarr_monitor_season(services, sonarr_id=2, season_number=99, confirm=True)
+    assert result["ok"] is False
+    assert result["error_type"] == "not_found"
+    assert result["details"]["available_seasons"] == [1, 2]
+    assert services.sonarr.puts == []
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,7 @@ async def sonarr_overview(
     include_series: bool = True,
     include_queue: bool = True,
     include_missing: bool = True,
+    include_seasons: bool = False,
     limit: int = 100,
 ) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
@@ -37,7 +38,9 @@ async def sonarr_overview(
         data: dict[str, Any] = {"limit": bounded}
         if include_series:
             series = await services.sonarr.get("/api/v3/series")
-            data["series"] = [compact_series(item) for item in _as_list(series)[:bounded]]
+            data["series"] = [
+                compact_series(item, include_seasons=include_seasons) for item in _as_list(series)[:bounded]
+            ]
         if include_queue:
             queue = await services.sonarr.get(
                 "/api/v3/queue",
@@ -122,6 +125,63 @@ async def sonarr_add_series(
             return ToolResponse.success({"dry_run": True, "would_add": preview})
         created = await services.sonarr.post("/api/v3/series", payload)
         return ToolResponse.success({"dry_run": False, "created": compact_series(created)})
+
+    return await safe_tool(run)
+
+
+async def sonarr_monitor_season(
+    services: Services,
+    sonarr_id: int,
+    season_number: int,
+    search_now: bool = True,
+    confirm: bool = False,
+) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not sonarr_id:
+            raise MediaMcpError("validation", "sonarr_monitor_season requires sonarr_id.")
+        if season_number is None or season_number < 0:
+            raise MediaMcpError("validation", "sonarr_monitor_season requires a non-negative season_number.")
+        series = await services.sonarr.get(f"/api/v3/series/{sonarr_id}")
+        if not isinstance(series, dict):
+            raise MediaMcpError("not_found", "Sonarr series was not found.", {"sonarr_id": sonarr_id})
+        seasons = [s for s in series.get("seasons") or [] if isinstance(s, dict)]
+        target = next((s for s in seasons if s.get("seasonNumber") == season_number), None)
+        if target is None:
+            available = sorted(s["seasonNumber"] for s in seasons if isinstance(s.get("seasonNumber"), int))
+            raise MediaMcpError(
+                "not_found",
+                "Series has no such season.",
+                {"sonarr_id": sonarr_id, "season_number": season_number, "available_seasons": available},
+            )
+        preview = {
+            "sonarr_id": sonarr_id,
+            "title": series.get("title"),
+            "season_number": season_number,
+            "already_monitored": bool(target.get("monitored")) and bool(series.get("monitored")),
+            "search_now": search_now,
+        }
+        if not confirm:
+            return ToolResponse.success({"dry_run": True, "would_monitor": preview})
+        # Flip the target season — and ensure the series itself is monitored, since Sonarr
+        # ignores season-level monitoring on an unmonitored series. There is no season-only
+        # PATCH; the web UI round-trips the whole series object, so we PUT it back wholesale.
+        target["monitored"] = True
+        series["monitored"] = True
+        updated = await services.sonarr.put(f"/api/v3/series/{sonarr_id}", series)
+        command = None
+        if search_now:
+            command = await services.sonarr.post(
+                "/api/v3/command",
+                {"name": "SeasonSearch", "seriesId": sonarr_id, "seasonNumber": season_number},
+            )
+        return ToolResponse.success(
+            {
+                "dry_run": False,
+                "monitored": preview,
+                "series": compact_series(updated, include_seasons=True) if isinstance(updated, dict) else None,
+                "search_command": command,
+            }
+        )
 
     return await safe_tool(run)
 

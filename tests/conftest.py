@@ -13,6 +13,7 @@ class FakeArrClient:
     def __init__(self, routes: dict[tuple[str, str], Any] | None = None) -> None:
         self.routes = routes or {}
         self.posts: list[tuple[str, dict[str, Any]]] = []
+        self.puts: list[tuple[str, dict[str, Any]]] = []
         self.deletes: list[tuple[str, dict[str, Any] | None]] = []
         # Mapping of path -> Exception. When set, delete(path, ...) records the
         # call (so callers can assert it was attempted) and then raises.
@@ -30,6 +31,13 @@ class FakeArrClient:
         if result is not None:
             return result
         return {"id": 999, **payload}
+
+    async def put(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.puts.append((path, payload))
+        result = self.routes.get(("PUT", path))
+        if result is not None:
+            return result
+        return payload
 
     async def delete(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
         self.deletes.append((path, params))
@@ -167,6 +175,18 @@ def services(settings: Settings) -> Services:
                     "monitored": True,
                     "path": "/media/TV/The Wire",
                     "statistics": {"episodeFileCount": 60, "episodeCount": 60},
+                    "seasons": [
+                        {
+                            "seasonNumber": 1,
+                            "monitored": True,
+                            "statistics": {"episodeFileCount": 13, "episodeCount": 13, "sizeOnDisk": 10 * 1024**3},
+                        },
+                        {
+                            "seasonNumber": 2,
+                            "monitored": False,
+                            "statistics": {"episodeFileCount": 0, "episodeCount": 12, "sizeOnDisk": 0},
+                        },
+                    ],
                 }
             ],
             ("GET", "/api/v3/series/lookup"): [{"title": "The Wire", "year": 2002, "tvdbId": 79126}],
@@ -175,6 +195,10 @@ def services(settings: Settings) -> Services:
                 "title": "The Wire",
                 "path": "/media/TV/The Wire",
                 "monitored": True,
+                "seasons": [
+                    {"seasonNumber": 1, "monitored": True},
+                    {"seasonNumber": 2, "monitored": False},
+                ],
             },
             ("GET", "/api/v3/queue"): {
                 "records": [
