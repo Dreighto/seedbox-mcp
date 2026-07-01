@@ -69,6 +69,7 @@ async def _handle_message(settings: BotSettings, token: str, chat_id: int, text:
             model=settings.ollama_bot_model,
             ollama_url=settings.ollama_url,
         )
+        logger.info("reply: %r", reply)
     except Exception:
         logger.exception("agent turn failed for message: %r", text)
         reply = "Something went wrong answering that — check the service log (journalctl -u seedbox-telegram-bot)."
