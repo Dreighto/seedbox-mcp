@@ -33,6 +33,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_control,
     nasdoom_find,
     nasdoom_find_grab,
+    nasdoom_grab_release,
     nasdoom_health,
     nasdoom_match_apply,
     nasdoom_match_search,
@@ -41,6 +42,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_queue,
     nasdoom_queue_command,
     nasdoom_queue_item_command,
+    nasdoom_releases,
     nasdoom_requests_action,
     nasdoom_requests_overview,
     nasdoom_share_files_list,
@@ -987,6 +989,29 @@ def create_mcp(services: Services) -> FastMCP:
         worked."""
         return await nas_service_restart(services, name, confirm)
 
+    async def nasdoom_releases_tool(kind: str, tmdb_id: int) -> dict[str, Any]:
+        """Read-only: what actual releases exist for a movie/show right now
+        and at what quality. kind: 'movie'|'tv'; get tmdb_id from a search
+        first. Returns per-release quality, whether it meets the normal
+        720p/1080p profile (meets_standard_profile), and whether it's a
+        theatrical rip (theatrical_rip: cam/telesync/screener). Top-level
+        standard_quality_available and only_theatrical_rips summarize it.
+        Use this to answer 'is a good copy out yet' and to warn a requester
+        honestly before grabbing a below-standard release. No download
+        happens here."""
+        return await nasdoom_releases(services, kind, tmdb_id)
+
+    async def nasdoom_grab_release_tool(grab_id: str, confirm: bool = False) -> dict[str, Any]:
+        """Grab one SPECIFIC release by its grab_id from nasdoom_releases,
+        overriding the normal quality profile. This is only for the case
+        where a requester has been told a release is below standard
+        (a theatrical rip / not true streaming quality) and has explicitly
+        agreed to it anyway. Two-step: confirm=false previews, confirm=true
+        grabs. Do NOT use this for a normal request (that's the standard
+        request flow, which already respects the quality profile) — only
+        for a knowingly-accepted sub-standard grab."""
+        return await nasdoom_grab_release(services, grab_id, confirm)
+
     async def jellyseerr_search_tool(query: str) -> dict[str, Any]:
         """Search Jellyseerr directly for a movie or TV title. Unlike
         nasdoom_omni_search, this filters out anything flagged adult before
@@ -1101,6 +1126,8 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_profiles", READ_ONLY, nasdoom_profiles_tool)
     register_tool(mcp, "jellyseerr_search", READ_ONLY, jellyseerr_search_tool)
     register_tool(mcp, "jellyseerr_request_add", WRITE, jellyseerr_request_add_tool)
+    register_tool(mcp, "nasdoom_releases", READ_ONLY, nasdoom_releases_tool)
+    register_tool(mcp, "nasdoom_grab_release", WRITE, nasdoom_grab_release_tool)
     register_tool(mcp, "nas_import_diagnosis", READ_ONLY, nas_import_diagnosis_tool)
     register_tool(mcp, "nas_disk_health", READ_ONLY, nas_disk_health_tool)
     register_tool(mcp, "nas_service_status", READ_ONLY, nas_service_status_tool)

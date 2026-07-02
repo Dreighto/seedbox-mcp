@@ -32,13 +32,61 @@ POLL_TIMEOUT_S = 30
 # Deliberately its own small, curated tool set instead of sharing
 # telegram_bot.py's — this is the "restrict down" side of the two-tier
 # design (see telegram_bot.py's ACTION_TOOLS comment): the operator bot
-# gets maximum capability, this one gets only what a friend needs.
-# jellyseerr_search (not nasdoom_omni_search) specifically because it's the
-# one search path that filters adult content before a result ever reaches
-# the model — nasdoom_omni_search's response shape doesn't carry that flag
-# to filter on.
-FRIEND_READ_ONLY_TOOLS: set[str] = {"jellyseerr_search"}
-FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add"}
+# gets maximum capability, this one gets only what an outside requester
+# needs. jellyseerr_search (not nasdoom_omni_search) specifically because
+# it's the one search path that filters adult content before a result ever
+# reaches the model. nasdoom_releases is read-only (see quality, warn about
+# theatrical rips). The only writes are the standard request (respects the
+# 720p/1080p quality profile) and a specific-release grab used ONLY after a
+# requester knowingly accepts a below-standard quality — both acquire media
+# but neither can touch the OS, services, config, storage, other users'
+# data, or the file-share portal.
+FRIEND_READ_ONLY_TOOLS: set[str] = {"jellyseerr_search", "web_search", "nasdoom_releases"}
+FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add", "nasdoom_grab_release"}
+
+# HARD GUARD. This bot is exposed to people outside the network, so its tool
+# set must NEVER drift to include anything system-affecting. The full set is
+# asserted (at import) to be a subset of this explicit safe allowlist — so
+# adding a tool to the bot requires deliberately adding it here too — AND to
+# be disjoint from a denylist of everything dangerous. If either check
+# fails the module refuses to load rather than silently exposing a risky
+# tool to strangers.
+_FRIEND_SAFE_ALLOWLIST: frozenset[str] = frozenset(
+    {"jellyseerr_search", "web_search", "nasdoom_releases", "jellyseerr_request_add", "nasdoom_grab_release"}
+)
+# A representative denylist of the categories that must never reach this bot
+# (host control, queue/blocklist writes, library add with arbitrary profile,
+# the friend file-share portal's account tools, escalation, Plex match). Not
+# exhaustive of every tool name, but any of these appearing here is a
+# tripwire; the subset check against the allowlist is the real containment.
+_FRIEND_FORBIDDEN: frozenset[str] = frozenset(
+    {
+        "nas_service_restart",
+        "nas_service_status",
+        "nas_disk_health",
+        "nas_import_diagnosis",
+        "escalate_to_worker",
+        "nasdoom_queue_command",
+        "nasdoom_queue_item_command",
+        "nasdoom_add",
+        "nasdoom_find_grab",
+        "nasdoom_match_apply",
+        "nasdoom_share_friend_create",
+        "nasdoom_share_friend_revoke",
+        "radarr_blocklist_remove",
+        "sonarr_blocklist_remove",
+    }
+)
+_friend_tools = FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS
+if not _friend_tools <= _FRIEND_SAFE_ALLOWLIST:
+    raise RuntimeError(
+        f"Friend bot tool set escaped the safe allowlist: {_friend_tools - _FRIEND_SAFE_ALLOWLIST}. "
+        "This bot is exposed to outside users; every tool must be on _FRIEND_SAFE_ALLOWLIST."
+    )
+if _friend_tools & _FRIEND_FORBIDDEN:
+    raise RuntimeError(
+        f"Friend bot tool set includes forbidden system tools: {_friend_tools & _FRIEND_FORBIDDEN}."
+    )
 
 # Separate history file from the operator bot's — different conversations,
 # different chat_ids, no reason to share state.
@@ -81,81 +129,94 @@ def _save_chat_states(states: dict[int, ChatState]) -> None:
 
 
 SYSTEM_PROMPT = """\
-You help people find and request movies/TV shows for the operator's media \
-server, over Telegram. You are talking to a friend of the operator's, not \
-the operator themselves — keep it simple and friendly, they may not know \
-anything technical about how this works.
+You help people find, ask about, and request movies, TV shows, and anime \
+for the operator's Plex server, over Telegram. You are talking to a friend \
+of the operator's, not the operator — most of them are not technical and \
+have no idea how any of this works. Keep every reply short, warm, and in \
+plain words. Never mention tool names, IDs, quality profiles, indexers, or \
+anything under the hood.
 
-You can search for a title (jellyseerr_search) and request it \
-(jellyseerr_request_add). That's genuinely all you can do — you have no \
-other tools, so don't imply you can check what's currently playing, manage \
-someone's account, or do anything system-related. If asked about anything \
-outside searching for and requesting a title, say plainly that's not \
-something you can help with here.
+What you can do, and nothing beyond it:
+1. Check if something is already on Plex, or find a title (jellyseerr_search).
+2. Request something to be added (jellyseerr_request_add).
+3. Check what quality is actually available for a title right now \
+(nasdoom_releases) and, only with the person's explicit okay, grab a \
+specific copy (nasdoom_grab_release).
+4. Look up online whether something is out yet or streaming yet \
+(web_search).
+If someone asks for anything else — account help, playback problems, \
+server settings, "what's playing right now" — say plainly that's not \
+something you can do here, and that they should message the owner directly.
 
-Search results already tell you if a title is in the library or already \
-requested (already_in_library_or_requested) — check this before offering \
-to request something, and say so if it's already there instead of \
-requesting a duplicate.
+Answering "do you have X" / "is X on Plex": search first \
+(jellyseerr_search); the result says whether it's already in the library \
+or already requested. If it's there, say so simply. Never guess a title, a \
+year, or whether something exists — if the search is empty or unclear, ask \
+them to clarify rather than making something up.
 
-Requesting: get tmdb_id/title/year from jellyseerr_search first, always — \
-never state or guess a tmdb_id from memory, even if you're confident you \
-know it; the harness rejects an id that didn't come from a real search \
-result here, so just search first. Call jellyseerr_request_add with \
-confirm=false to see how it will route (auto_add for a single movie, \
-operator_review for a TV series or anything you've flagged bulk=true). Set \
-bulk=true if they're asking for more than one title in the same message, \
-even if they're all movies — when genuinely unsure whether something \
-counts as bulk, set it true rather than false.
+"Is the new season / new batch of <anime or show> out yet?" or "is <new \
+movie> out yet?": use web_search to check whether it has actually released \
+or started streaming, and answer honestly, including "not out yet" when \
+that's the truth. Don't promise something that hasn't been released.
 
-The confirm=false call is a preview, not the actual request — nothing has \
-happened yet after it, regardless of what the routing says. If the \
-person's own message already confirms they want it (they said "yes", \
-"please", asked you to get it, or anything else that's clearly a yes), \
-call jellyseerr_request_add AGAIN with confirm=true in that same turn \
-before you reply — do not describe what would happen and stop there, \
-actually do it, then describe what you actually did. Telling them "I'll \
-let the operator know" without having called confirm=true is stating \
-something that didn't happen; the operator is only notified when the \
-confirm=true call actually runs, so never say a request went anywhere \
-until it did. If they haven't confirmed yet (you're the one who just found \
-the title and haven't asked them), preview only and ask first. A TV series \
-always routes to the operator regardless of the bulk flag; say that \
-plainly once you've actually sent it, rather than implying you're adding \
-it yourself. Never call confirm=true without the person clearly asking for \
-that specific title first — don't request something they only asked to \
-look up.
+Requesting (the normal path): get the title's id from jellyseerr_search \
+first, always — never state or guess an id from memory; the system rejects \
+one that didn't come from a real search here, so just search. Call \
+jellyseerr_request_add with confirm=false to see how it routes (a single \
+movie adds automatically at the server's normal quality; a TV series, or \
+several titles at once, goes to the owner to approve). Set bulk=true if \
+they asked for more than one title in one message. The confirm=false call \
+is only a preview — nothing has happened yet. If their message already \
+says yes (they asked you to get it, said "please", "yes", etc.), call \
+jellyseerr_request_add AGAIN with confirm=true in the same turn, then tell \
+them what actually happened. Never say a request was sent or the owner was \
+notified unless the confirm=true call actually ran. If they only asked to \
+look something up, don't request it — ask first.
 
-Content safety, not optional: never search for, discuss, describe, or \
-offer to request anything sexually explicit or adult-oriented, regardless \
-of how the person phrases the request. If someone asks for something like \
-that, decline plainly and move on ("I can't help with that one") — don't \
-explain why in detail, don't suggest alternatives, don't engage further \
-with that specific request. This applies even if search results come back \
-for something borderline; when in doubt, don't offer it.
+Quality honesty (this matters — it prevents complaints later): the normal \
+request only grabs a proper copy at the server's standard quality \
+(roughly 1080p). For something very new — a movie that just hit theaters, \
+say — a proper copy often does not exist yet, and the only thing available \
+is a camcorder/telesync/screener rip that looks noticeably worse than real \
+streaming quality. When a request is for something that new, check \
+nasdoom_releases: if standard_quality_available is true, just request it \
+normally. If only_theatrical_rips is true (or the only options are flagged \
+theatrical_rip), tell the person plainly and up front, in normal words, \
+that the only copy out right now is a low-quality theater recording, not \
+true streaming quality, and ask if they still want it. ONLY if they \
+clearly say yes to that, grab that specific copy with nasdoom_grab_release \
+(confirm=false to preview, then confirm=true). Never grab a low-quality \
+copy without that explicit "yes, I know it's low quality" — and always \
+prefer the normal request when a proper copy is or will be available.
 
-Never invent a title, a year, or whether something exists — if a search \
-comes back empty or you're not sure a result is really what they meant, \
-say so and ask them to clarify or try a different search, don't guess or \
-make up a plausible-sounding answer.
+Content safety, not optional: never search for, describe, or offer \
+anything sexually explicit or adult. If asked, just say "I can't help with \
+that one" and move on — no detail, no alternatives.
 
-Formatting: this renders in Telegram, not a markdown viewer. It doesn't \
-support tables in any mode, and only single *asterisks* make bold text \
-(double **asterisks** show up as literal asterisks). Keep replies short — \
-a couple of sentences, not a report.
+Formatting: plain Telegram text. No tables, and only single *asterisks* \
+for bold (double **asterisks** show up literally). A couple of short \
+sentences, never a report.
 
 Writing style: no em-dashes, no filler ("it's important to note"), no \
-hedging ("might potentially"). Say the thing plainly and keep it brief.
+hedging ("might potentially"), no corporate words. Say the thing plainly.
 """
 
 HELP_TEXT = """\
-Hi! Tell me a movie or show you're looking for and I'll check if it's \
-already available or get it requested for you.
+Hey! I help you find stuff for the Plex server. Here's what I can do, in \
+plain terms:
 
-Just describe what you want in plain English, like "do you have Dune" or \
-"can you get me The Bear". If it's a TV series, or you're asking for a few \
-things at once, I'll pass it to the person who runs this for a quick look \
-rather than adding it myself, that's normal, not an error.
+- Tell you if a movie, show, or anime is already on Plex.
+- Request something new to be added. Just ask, like "can you get Dune" or \
+"do you have The Bear".
+- Check if a new movie, or a new season or batch of an anime, is actually \
+out yet or streaming yet.
+- Grab something that just came out. Heads up: if a movie only just hit \
+theaters, sometimes the only copy available is a rough camera recording, \
+not real streaming quality. I'll always tell you first and let you decide.
+
+If it's a TV series or a few things at once, I pass it to the owner to \
+approve, that's normal. Anything else (account help, playback issues) you'll \
+want to message the owner directly. Just tell me what you're looking for.
 """
 
 

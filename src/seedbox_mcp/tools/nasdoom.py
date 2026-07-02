@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from seedbox_mcp.errors import MediaMcpError
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.schemas import ToolResponse
 from seedbox_mcp.tools.common import safe_tool
@@ -219,6 +220,127 @@ async def nasdoom_find_grab(
                 }
             )
         result = await services.nasdoom.post("/v1/find/grab", {"grabId": grab_id, "share": share})
+        return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)
+
+
+# Theatrical-rip / not-true-streaming-quality markers, matched against a
+# release title (more reliable than the quality field for these tiers). A
+# release tagged with any of these is a camcorder/telesync/screener rip —
+# watchable but visibly below real streaming quality, and the friend bot
+# must warn the requester before grabbing one.
+_THEATRICAL_RIP_MARKERS = (
+    "cam",
+    "hdcam",
+    "camrip",
+    "ts",
+    "hdts",
+    "telesync",
+    "tc",
+    "telecine",
+    "scr",
+    "screener",
+    "dvdscr",
+    "bdscr",
+    "workprint",
+    "r5",
+    "r6",
+    "predvd",
+    "hqcam",
+)
+
+
+def _is_theatrical_rip(title: str, quality: str) -> bool:
+    hay = f" {title.lower().replace('.', ' ').replace('-', ' ')} {quality.lower()} "
+    return any(f" {m} " in hay for m in _THEATRICAL_RIP_MARKERS)
+
+
+async def nasdoom_releases(services: Services, kind: str, tmdb_id: int) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if kind not in VALID_ADD_KINDS:
+            return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_ADD_KINDS)})
+        try:
+            raw = await services.nasdoom.get(f"/v1/manage/{kind}/{tmdb_id}/releases")
+        except MediaMcpError:
+            # The interactive-search backend times out on some titles
+            # (heavy Prowlarr query -> 502). Degrade gracefully rather than
+            # surfacing a raw upstream error to an outside requester: signal
+            # "couldn't check quality" so the bot falls back to the normal
+            # request path (which respects the quality profile and won't grab
+            # a rip), not the override-grab path.
+            return ToolResponse.success(
+                {
+                    "kind": kind,
+                    "tmdb_id": tmdb_id,
+                    "releases_unavailable": True,
+                    "note": "Couldn't check available release quality right now (search backend timed "
+                    "out). Fall back to the normal request; do NOT offer a specific-release grab when "
+                    "quality is unknown.",
+                }
+            )
+        releases = raw.get("releases", []) if isinstance(raw, dict) else []
+        summarized = []
+        for r in releases[:20]:
+            title = r.get("title") or ""
+            quality = r.get("quality") or ""
+            summarized.append(
+                {
+                    "grab_id": r.get("grabId"),
+                    "title": title,
+                    "quality": quality,
+                    "size": r.get("sizeText") or r.get("size"),
+                    "indexer": r.get("indexer"),
+                    "theatrical_rip": _is_theatrical_rip(title, quality),
+                }
+            )
+        # "Standard quality" = any release that ISN'T a theatrical rip (a real
+        # BluRay/WEB/HD copy exists). Deliberately NOT based on the backend's
+        # `approved` flag: approved reflects whether the arr would grab it
+        # given the title's CURRENT state in Radarr/Sonarr, so for a title not
+        # yet added everything reads approved=false, which would falsely say
+        # "no standard quality" even when clean BluRays are listed.
+        non_rips = [r for r in summarized if not r["theatrical_rip"]]
+        rips_only = bool(summarized) and not non_rips
+        return ToolResponse.success(
+            {
+                "kind": kind,
+                "tmdb_id": tmdb_id,
+                "release_count": len(releases),
+                "standard_quality_available": bool(non_rips),
+                "only_theatrical_rips": rips_only,
+                "releases": summarized,
+                "note": "only_theatrical_rips=true means the sole options are camcorder/telesync/"
+                "screener rips (watchable but clearly below streaming quality) — warn the requester "
+                "before grabbing one. standard_quality_available=true means a proper (non-rip) copy "
+                "is listed; use the normal request for that, not a specific-release grab.",
+            }
+        )
+
+    return await safe_tool(run)
+
+
+async def nasdoom_grab_release(services: Services, grab_id: str, confirm: bool = False) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if not confirm:
+            # grabId is opaque and single-use (30 min TTL); the preview can't
+            # re-resolve it without spending it. The model must already know
+            # the release (incl. its quality) from the nasdoom_releases call
+            # that produced this grab_id.
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "would_grab": {"grab_id": grab_id},
+                    "note": "This grabs a SPECIFIC release, overriding the normal quality profile — "
+                    "only confirm after the requester has been told the quality and agreed. grabId "
+                    "expires in 30 minutes.",
+                }
+            )
+        result = await services.nasdoom.post("/v1/manage/grab", {"grabId": grab_id})
         return ToolResponse.success({"dry_run": False, **result})
 
     return await safe_tool(run)
