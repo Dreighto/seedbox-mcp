@@ -134,6 +134,39 @@ def format_report(readiness: list[ToolReadiness], threshold: int = GRADUATION_MI
     return "\n".join(lines)
 
 
+def build_nudge(readiness: list[ToolReadiness]) -> str | None:
+    """Short, Telegram-safe nudge for the daily digest — only when there's
+    something actionable. Returns None (append nothing) on a quiet day, so the
+    digest isn't cluttered with "nothing to graduate" noise every run."""
+    ready = [r for r in readiness if r.verdict == "ready"]
+    review = [r for r in readiness if r.verdict == "review"]
+    if not ready and not review:
+        return None
+    lines = ["*Monitor autonomy*"]
+    for r in ready:
+        lines.append(
+            f"{r.tool} has proven itself ({r.real_success} clean fixes, 0 failures). "
+            "Consider graduating it to the unattended monitor."
+        )
+    for r in review:
+        n = r.real_fail
+        lines.append(
+            f"{r.tool} has {n} real failure{'s' if n != 1 else ''} on record. "
+            "Inspect before trusting it unattended."
+        )
+    return "\n".join(lines)
+
+
+def graduation_nudge() -> str | None:
+    """Load the real audit + tool sets and build the digest nudge, or None."""
+    from seedbox_mcp.action_audit import AUDIT_LOG_PATH
+    from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS
+    from seedbox_mcp.monitor import MONITOR_ACTION_TOOLS
+
+    rows = load_audit_rows(AUDIT_LOG_PATH)
+    return build_nudge(analyze_readiness(rows, ACTION_TOOLS, MONITOR_ACTION_TOOLS))
+
+
 def main() -> None:
     from seedbox_mcp.action_audit import AUDIT_LOG_PATH
     from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS

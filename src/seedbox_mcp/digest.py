@@ -14,6 +14,7 @@ from seedbox_mcp.chat.ollama_ai import (
     run_agent_turn,
 )
 from seedbox_mcp.config import Settings
+from seedbox_mcp.graduation import graduation_nudge
 from seedbox_mcp.telegram import send_message
 
 logger = logging.getLogger("seedbox_mcp.digest")
@@ -139,6 +140,14 @@ def main() -> None:
     args = parser.parse_args()
 
     result = asyncio.run(run_digest(args.task, args.model))
+
+    # Deterministic autonomy nudge appended out of the LLM's hands: when a fix
+    # tool has earned graduation (or has failures worth a look), tell the
+    # operator here rather than hoping the model notices. Silent otherwise.
+    nudge = graduation_nudge()
+    if nudge:
+        result = f"{result}\n\n{nudge}"
+
     print(result)
 
     if not args.no_telegram:

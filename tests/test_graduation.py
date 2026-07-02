@@ -52,3 +52,21 @@ def test_dry_runs_do_not_count_as_proof() -> None:
     assert r["grab"].verdict == "unproven"
     assert r["grab"].dry_run == 10
     assert r["grab"].real_success == 0
+
+
+def test_nudge_none_when_nothing_actionable() -> None:
+    from seedbox_mcp.graduation import build_nudge
+
+    rows = [_row("service_restart", "ok"), _row("service_restart", "ok")]  # proving, not ready
+    assert build_nudge(analyze_readiness(rows, ACTION, MONITOR, threshold=5)) is None
+
+
+def test_nudge_flags_ready_and_review() -> None:
+    from seedbox_mcp.graduation import build_nudge
+
+    rows = [_row("grab", "ok") for _ in range(5)]  # ready
+    rows += [_row("fix_import", "ok"), _row("fix_import", "error: x")]  # review (has a failure)
+    nudge = build_nudge(analyze_readiness(rows, ACTION, MONITOR, threshold=5))
+    assert nudge is not None
+    assert "grab has proven itself" in nudge
+    assert "fix_import has 1 real failure" in nudge
