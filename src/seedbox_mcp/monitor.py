@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -12,6 +13,7 @@ from fastmcp import Client
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, READ_ONLY_TOOLS, run_agent_turn
 from seedbox_mcp.config import Settings
+from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.telegram import send_message
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 
@@ -199,6 +201,16 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
 
     await _keep_interactive_model_warm(settings.ollama_url)
     queue_fix_note = await _deterministic_queue_resume(mcp_client)
+    # Strike-based stalled-download fixer — deterministic, same "keep it out
+    # of the LLM's hands" rationale as the queue-resume above: strike
+    # counting needs persistent state across cycles and a fixed threshold,
+    # not model judgment. Runs before the LLM and its outcome is folded into
+    # the report.
+    strike_note = None
+    try:
+        strike_note = await run_download_strike_check(settings, time.time())
+    except Exception:
+        logger.exception("download strike check failed (non-fatal)")
 
     # Spelled out as an explicit checklist in the TASK message, not just
     # buried in the system prompt — live testing found the model skip
@@ -213,9 +225,9 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats, "
         "nas_disk_health. Disk verdicts (ok/watch/replace_now) are computed in code; a watch or "
         "replace_now verdict is ALWAYS report-worthy, quoted with its exact reasons. "
-        "Note: the queue's paused state has already been checked and auto-corrected before you "
-        "started, by a separate deterministic step — don't try to fix it again yourself, just "
-        "report its current (already-correct) state like any other check."
+        "Note: the queue's paused state AND any stalled downloads have already been checked and "
+        "auto-corrected before you started, by separate deterministic steps — don't try to fix "
+        "those yourself, just report the queue's current state like any other check."
     )
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
         task,
@@ -235,9 +247,11 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         max_tool_rounds=20,
     )
     llm_alert = None if text.strip() == NO_ALERT_SENTINEL else text
-    if queue_fix_note and llm_alert:
-        return f"{queue_fix_note}\n\n{llm_alert}"
-    return queue_fix_note or llm_alert
+    # Deterministic-fix notes always surface (they describe real actions
+    # taken or real import problems flagged), even on an otherwise-silent
+    # cycle where the LLM returned the no-alert sentinel.
+    parts = [p for p in (queue_fix_note, strike_note, llm_alert) if p]
+    return "\n\n".join(parts) if parts else None
 
 
 def main() -> None:

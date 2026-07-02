@@ -12,3 +12,5 @@ Thumbs.db
 todo_human.md
 .env.remote
 .DS_Store
+.telegram_bot_friend_history.json
+.monitor_download_strikes.json
