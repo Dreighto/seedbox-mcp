@@ -129,6 +129,7 @@ ACTION_TOOLS: set[str] = {
     "sonarr_blocklist_remove",
     "jellyseerr_request_add",
     "nasdoom_grab_release",
+    "nasdoom_fix_import",
     # nas_service_restart is a real service interruption but bounded (the
     # tool itself enforces a media-stack allowlist and verifies the
     # post-restart state in code) — same "safety mechanism earns the spot"
@@ -169,6 +170,7 @@ ENTITY_ID_PARAMS: dict[str, set[str]] = {
     "nasdoom_add": {"tmdb_id", "tvdb_id"},
     "jellyseerr_request_add": {"tmdb_id"},
     "nasdoom_releases": {"tmdb_id"},
+    "nasdoom_fix_import": {"tmdb_id"},
 }
 ENTITY_ID_RESULT_KEYS: dict[str, set[str]] = {
     # "tmdb"/"tvdb" (bare) cover nasdoom_omni_search's nested {"ids": {"tmdb":

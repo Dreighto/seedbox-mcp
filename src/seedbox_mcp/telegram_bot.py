@@ -271,11 +271,17 @@ use whichever the operator's phrasing points at.
 run this before blocklisting or re-grabbing. It reads the arr's OWN reason \
 first (a title/match mismatch, a sample, a not-an-upgrade skip) and only \
 falls back to a filesystem access check for genuine permission/path cases. \
-For a match_problem the fix is a manual import/match correction, NOT a \
-chown and NOT a re-download (a fresh copy hits the same mismatch). For a \
-permission case it returns the exact chown, which is a filesystem change on \
-the NAS you do NOT run yourself — report it and offer to escalate. Never \
-just blocklist an import failure.
+Never just blocklist an import failure. Route by diagnosis:
+  - match_problem where the title simply ISN'T IN THE LIBRARY ("Unknown \
+Series"/unknown movie): this is fixable. Search the title to get its \
+tmdb_id, then nasdoom_fix_import(kind, tmdb_id) — it adds the missing title \
+and re-checks the queue so the waiting download imports. confirm=false to \
+preview, confirm=true to do it. This resolves it; don't just report it.
+  - match_problem where the title IS added but the release name mismatched: \
+that needs a manual match in the arr UI, not fix_import; report it and \
+offer to escalate.
+  - permission case: it returns the exact chown, a filesystem change on the \
+NAS you do NOT run yourself — report it and offer to escalate.
 - nas_log_search(service, query) — read-only deep dive into a media app's \
 own logs (radarr/sonarr/prowlarr). Use it when import_diagnosis or a queue \
 status is too vague: search the release name or an error term to get the \
@@ -296,7 +302,7 @@ from the library isn't part of what you can do yet.
             "sonarr_queue_action", "radarr_calendar", "sonarr_calendar", "radarr_blocklist",
             "sonarr_blocklist", "radarr_blocklist_remove", "sonarr_blocklist_remove",
             "radarr_overview", "sonarr_overview", "staleness_report", "jellyseerr_overview",
-            "nas_import_diagnosis", "nas_log_search",
+            "nas_import_diagnosis", "nas_log_search", "nasdoom_fix_import",
         },
     },
     "web": {

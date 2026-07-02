@@ -156,3 +156,4 @@ def _compact_request(item: dict[str, Any]) -> dict[str, Any]:
         "requested_by": requested_by.get("displayName") or requested_by.get("username"),
         "created_at": item.get("createdAt"),
     }
+

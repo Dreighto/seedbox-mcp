@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from seedbox_mcp.errors import MediaMcpError
@@ -474,8 +475,77 @@ async def nasdoom_add(
                     "a missing value, unless the operator asked for a specific one.",
                 }
             )
-        result = await services.nasdoom.post("/v1/omni/add", body)
+        # NASDOOM intermittently 500s with no_root_folder_or_profile on the
+        # first add (a race resolving the arr's root folder/profile) and then
+        # succeeds on an immediate retry — observed live for both a movie and
+        # a TV series. _nasdoom_add_with_retry handles that transient.
+        result = await _nasdoom_add_with_retry(services, body)
         return ToolResponse.success({"dry_run": False, **result})
+
+    return await safe_tool(run)
+
+
+async def _nasdoom_add_with_retry(services: Services, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await services.nasdoom.post("/v1/omni/add", body)  # type: ignore[union-attr]
+    except MediaMcpError as exc:
+        detail = (exc.details or {}).get("body") or {}
+        if not (isinstance(detail, dict) and detail.get("error") == "no_root_folder_or_profile"):
+            raise
+        await asyncio.sleep(1.5)
+        return await services.nasdoom.post("/v1/omni/add", body)  # type: ignore[union-attr]
+
+
+async def nasdoom_fix_import(
+    services: Services, kind: str, tmdb_id: int, confirm: bool = False
+) -> dict[str, Any]:
+    """Resolve a download that's import-blocked because its series/movie
+    isn't in the library ('Unknown Series'/'unknown movie'): add the missing
+    title, then trigger the arr to re-check its queue so the already-grabbed,
+    now-matchable download imports. One atomic, confirm-gated fix. Use this
+    only when nas_import_diagnosis reported a match_problem AND the reason is
+    the title being absent from the library (not a title MISMATCH against an
+    already-added series, which needs a manual match instead). Get kind +
+    tmdb_id from a search first."""
+
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if kind not in VALID_ADD_KINDS:
+            return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_ADD_KINDS)})
+        if not confirm:
+            return ToolResponse.success(
+                {
+                    "dry_run": True,
+                    "would_fix": {"kind": kind, "tmdb_id": tmdb_id},
+                    "note": "Would add this title to the library (at the standard default profile) and "
+                    "then re-check the arr's queue so the waiting download imports. Only do this when "
+                    "the block is because the title isn't in the library.",
+                }
+            )
+        body = {"kind": kind, "tmdbId": tmdb_id, "monitored": True, "searchNow": False}
+        add_result = await _nasdoom_add_with_retry(services, body)
+        # Now nudge the matching arr to re-check its queue so the blocked
+        # download imports immediately (rather than on the arr's ~1-min timer).
+        arr = services.sonarr if kind == "tv" else services.radarr
+        reprocessed = False
+        if arr is not None:
+            try:
+                await arr.post("/api/v3/command", {"name": "RefreshMonitoredDownloads"})
+                reprocessed = True
+            except MediaMcpError:
+                # Best-effort — the add already succeeded; the arr's own
+                # ~1-min timer will retry the import even if this nudge fails.
+                pass
+        return ToolResponse.success(
+            {
+                "dry_run": False,
+                "added": add_result,
+                "reprocess_triggered": reprocessed,
+                "note": "Title added and the arr asked to re-check its queue. The waiting download "
+                "should import within a minute; confirm with a fresh queue/library check if needed.",
+            }
+        )
 
     return await safe_tool(run)
 

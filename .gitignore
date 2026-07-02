@@ -14,3 +14,4 @@ todo_human.md
 .DS_Store
 .telegram_bot_friend_history.json
 .monitor_download_strikes.json
+.monitor_alert_state.json

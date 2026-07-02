@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -254,6 +256,48 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     return "\n\n".join(parts) if parts else None
 
 
+# Alert-dedup state: the fingerprint of the last alert we actually pushed,
+# so an unresolved issue (e.g. an import block waiting on the operator) isn't
+# re-pushed every 30-min cycle. A genuinely persistent alert is re-sent at
+# most once per this interval as a reminder; a NEW or CHANGED alert always
+# pushes immediately; a clear cycle (nothing to report) resets the state so
+# a later recurrence re-alerts.
+ALERT_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_alert_state.json"
+REMIND_INTERVAL_S = 12 * 3600
+
+
+def _alert_decision(
+    fingerprint: str | None, state: dict[str, Any], now_ts: float, remind_s: float = REMIND_INTERVAL_S
+) -> tuple[bool, dict[str, Any]]:
+    """Pure. (should_push, new_state) given the current alert fingerprint
+    (None = nothing to report) and the persisted last-push state."""
+    if fingerprint is None:
+        return False, {}  # nothing active — reset
+    if state.get("hash") != fingerprint:
+        return True, {"hash": fingerprint, "last_pushed_ts": now_ts}  # new/changed
+    # Same alert as last time — only re-remind after the interval.
+    if now_ts - state.get("last_pushed_ts", 0) >= remind_s:
+        return True, {"hash": fingerprint, "last_pushed_ts": now_ts}
+    return False, state  # suppress the duplicate
+
+
+def _load_alert_state() -> dict[str, Any]:
+    if not ALERT_STATE_PATH.exists():
+        return {}
+    try:
+        loaded = json.loads(ALERT_STATE_PATH.read_text())
+        return loaded if isinstance(loaded, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_alert_state(state: dict[str, Any]) -> None:
+    try:
+        ALERT_STATE_PATH.write_text(json.dumps(state))
+    except OSError:
+        logger.exception("failed to persist alert state to %s", ALERT_STATE_PATH)
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     parser = argparse.ArgumentParser(description="Run one NAS monitor cycle; push to Telegram only if alert-worthy.")
@@ -265,11 +309,24 @@ def main() -> None:
     result = asyncio.run(run_monitor_cycle(args.model))
     if result is None:
         print(f"[{NO_ALERT_SENTINEL}] nothing to report this cycle")
+        # Nothing active — clear the dedup state so a later recurrence of the
+        # same issue alerts fresh instead of being suppressed as a duplicate.
+        _save_alert_state({})
         if not args.force_alert_test:
             return
         result = "(--force-alert-test) monitor cycle completed with no alert-worthy findings."
     else:
         print(result)
+
+    # Alert-once-then-quiet: don't re-push an identical unresolved alert every
+    # cycle. --force-alert-test bypasses the dedup (it's a manual test).
+    if not args.force_alert_test:
+        fingerprint = hashlib.sha256(result.encode()).hexdigest()
+        should_push, new_state = _alert_decision(fingerprint, _load_alert_state(), time.time())
+        _save_alert_state(new_state)
+        if not should_push:
+            print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
+            return
 
     if not args.no_telegram:
         settings = MonitorSettings()  # type: ignore[call-arg]
