@@ -5,7 +5,7 @@ from typing import Any
 
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.schemas import ToolResponse
-from seedbox_mcp.tools.common import clamp_limit, safe_tool
+from seedbox_mcp.tools.common import clamp_limit, compact_tautulli_activity, safe_tool
 
 _GROUPING = {"daily": 0, "monthly": 1, "total": 2}
 
@@ -51,6 +51,35 @@ async def tautulli_users(services: Services) -> dict[str, Any]:
         raw = await services.tautulli.get_users()
         users: list[dict[str, Any]] = [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
         return ToolResponse.success({"users": [_compact_user(u) for u in users]})
+
+    return await safe_tool(run)
+
+
+async def tautulli_now_playing(services: Services) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.tautulli:
+            return ToolResponse.failure("tautulli_unavailable", "Tautulli is not configured.")
+        activity = compact_tautulli_activity(await services.tautulli.get_activity())
+        sessions = activity.get("sessions", [])
+        stream_count = activity.get("stream_count")
+        return ToolResponse.success(
+            {
+                "stream_count": len(sessions) if stream_count in (None, "") else stream_count,
+                "total_bandwidth_kbps": activity.get("total_bandwidth"),
+                "now_playing": [
+                    {
+                        "user": s.get("user"),
+                        "title": s.get("grandparent_title") or s.get("title"),
+                        "detail": s.get("title") if s.get("grandparent_title") else None,
+                        "state": s.get("state"),
+                        "progress_percent": s.get("progress_percent"),
+                        "player": s.get("player"),
+                        "transcode_decision": s.get("transcode_decision"),
+                    }
+                    for s in sessions
+                ],
+            }
+        )
 
     return await safe_tool(run)
 

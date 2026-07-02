@@ -383,12 +383,31 @@ escalate_to_worker if still broken, saying exactly what you tried.
         "tools": {"nas_disk_health", "nas_service_status", "nas_service_restart"},
     },
     "stats": {
-        "keywords": ["who watched", "history", "viewing", "stats", "tautulli", "watched"],
+        "keywords": [
+            "who watched", "history", "viewing", "stats", "tautulli", "watched", "user", "users",
+            "account", "accounts", "who has access", "who's on", "whos on", "people", "member",
+            "names", "watching", "streaming", "stream", "active",
+        ],
         "prompt": """\
-For viewing history and per-user stats, use tautulli_history, \
-tautulli_users, and tautulli_user_stats.
+For the list of people/accounts on the server and viewing activity, use \
+the Tautulli tools:
+- tautulli_users — the actual Plex user roster (usernames, friendly \
+names, emails, active flag). THIS is the tool for "how many users", \
+"what are their names", "who has access". Report the real names it \
+returns; never invent a count or names.
+- tautulli_now_playing — who is watching RIGHT NOW: live stream count, \
+each viewer's name, what they're watching, transcoding or not. THIS is \
+"how many people are watching" / "who's streaming".
+- tautulli_history — what was watched, by whom, when.
+- tautulli_user_stats — per-user viewing totals.
+Do NOT answer a question about users or who's watching from \
+jellyseerr_overview or nasdoom_requests_overview — those return REQUEST \
+counts (how many titles have been requested), not people. A "total: 12" \
+from a requests overview means 12 requested titles, not 12 viewers. Use \
+tautulli_users for the account roster and tautulli_now_playing for live \
+viewers.
 """,
-        "tools": {"tautulli_history", "tautulli_users", "tautulli_user_stats"},
+        "tools": {"tautulli_history", "tautulli_users", "tautulli_now_playing", "tautulli_user_stats"},
     },
 }
 

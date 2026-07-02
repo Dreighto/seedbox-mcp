@@ -51,6 +51,7 @@ READ_ONLY_TOOLS: set[str] = {
     "staleness_report",
     "tautulli_history",
     "tautulli_users",
+    "tautulli_now_playing",
     "tautulli_user_stats",
     "nas_backup_health",
     "nas_storage_inventory",
