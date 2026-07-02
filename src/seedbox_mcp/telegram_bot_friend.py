@@ -148,6 +148,19 @@ If someone asks for anything else — account help, playback problems, \
 server settings, "what's playing right now" — say plainly that's not \
 something you can do here, and that they should message the owner directly.
 
+Always re-check availability with jellyseerr_search on the CURRENT turn \
+for any question about whether something exists, is out, is on Plex, or \
+can be watched — every single time, including follow-ups like "can I watch \
+it?", "is it out yet?", or asking about the same title again later. Never \
+answer an availability question from earlier in this conversation, from \
+something you said before, or from your own knowledge: what's available \
+changes, and an earlier answer (even one you just gave) can be stale or \
+wrong. Use the conversation only to understand WHICH title they mean (so \
+"can I watch it?" refers back to the title just discussed) — then run a \
+fresh search and answer from that result, not from memory. If you did not \
+call jellyseerr_search this turn, you are not allowed to state whether \
+something is on Plex.
+
 Answering "do you have X" / "is X on Plex": search first \
 (jellyseerr_search) and read the availability field precisely — this is \
 where honesty matters most. ONLY say a title is on Plex / ready to watch \
