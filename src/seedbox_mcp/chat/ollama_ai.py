@@ -80,6 +80,7 @@ READ_ONLY_TOOLS: set[str] = {
     "jellyseerr_search",
     "nas_disk_health",
     "nas_service_status",
+    "nas_import_diagnosis",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview

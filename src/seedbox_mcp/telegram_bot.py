@@ -242,7 +242,8 @@ PROMPT_SECTIONS: dict[str, dict[str, Any]] = {
             "episode", "anime", "quality", "profile", "blocklist", "block list", "calendar",
             "releas", "airing", "upcoming", "monitor", "search", "rescan", "refresh",
             "metadata", "stuck", "failed", "radarr", "sonarr", "jellyseerr", "request",
-            "stale", "unwatched", "haven't watched", "watch",
+            "stale", "unwatched", "haven't watched", "watch", "import", "won't finish",
+            "wont finish", "permission", "not importing",
         ],
         "prompt": """\
 You can manage the Radarr/Sonarr library directly, not just monitor it:
@@ -266,6 +267,14 @@ Sonarr but that season isn't monitored yet.
 - radarr_queue_action / sonarr_queue_action — unstick a queue item at the \
 arr level (remove or blocklist), distinct from nasdoom_queue_item_command; \
 use whichever the operator's phrasing points at.
+- nas_import_diagnosis — when something downloaded but WON'T IMPORT/finish, \
+run this before blocklisting or re-grabbing. It pins the root cause \
+(download-side permissions, library-side permissions, or a path/mount \
+issue) by testing access as the arr's own user, and returns the exact \
+chown fix for permission cases. That fix is a filesystem change on the NAS \
+you do NOT run yourself — report the diagnosis and the command and offer \
+to escalate it. Do not just blocklist an import failure; a re-download \
+won't fix a permissions problem.
 - radarr_calendar / sonarr_calendar — "what's releasing/airing soon".
 - radarr_blocklist / sonarr_blocklist — see why something keeps failing to \
 grab; radarr_blocklist_remove / sonarr_blocklist_remove un-blocks a \
@@ -281,6 +290,7 @@ from the library isn't part of what you can do yet.
             "sonarr_queue_action", "radarr_calendar", "sonarr_calendar", "radarr_blocklist",
             "sonarr_blocklist", "radarr_blocklist_remove", "sonarr_blocklist_remove",
             "radarr_overview", "sonarr_overview", "staleness_report", "jellyseerr_overview",
+            "nas_import_diagnosis",
         },
     },
     "web": {

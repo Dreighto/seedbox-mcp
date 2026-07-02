@@ -14,6 +14,7 @@ from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from seedbox_mcp.config import Settings, load_settings
+from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
 from seedbox_mcp.tools.downloads import (
@@ -943,6 +944,19 @@ def create_mcp(services: Services) -> FastMCP:
             services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
         )
 
+    async def nas_import_diagnosis_tool() -> dict[str, Any]:
+        """Diagnose WHY downloads are stuck importing into Radarr/Sonarr.
+        Scans both queues for import-stuck items and, for each, runs the
+        real access test as the arr's own uid inside its container to pin
+        the root cause: download-side permissions (the most common),
+        library-side permissions, or a path-not-found/mount issue.
+        Returns a specific diagnosis and, for permission cases, the exact
+        chown/chmod remediation command — which is a filesystem change on
+        the NAS the bot does NOT run itself; hand it to the operator or
+        escalate. Use this when the queue shows import failures, or when
+        the operator asks why something won't import / finish."""
+        return await nas_import_diagnosis(services)
+
     async def nas_disk_health_tool() -> dict[str, Any]:
         """Physical disk health for every drive on the NAS via SMART. Each
         disk gets a verdict computed in code from Backblaze failure-rate
@@ -1087,6 +1101,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_profiles", READ_ONLY, nasdoom_profiles_tool)
     register_tool(mcp, "jellyseerr_search", READ_ONLY, jellyseerr_search_tool)
     register_tool(mcp, "jellyseerr_request_add", WRITE, jellyseerr_request_add_tool)
+    register_tool(mcp, "nas_import_diagnosis", READ_ONLY, nas_import_diagnosis_tool)
     register_tool(mcp, "nas_disk_health", READ_ONLY, nas_disk_health_tool)
     register_tool(mcp, "nas_service_status", READ_ONLY, nas_service_status_tool)
     register_tool(mcp, "nas_service_restart", WRITE, nas_service_restart_tool)
