@@ -13,6 +13,61 @@ from seedbox_mcp.tools.common import (
 )
 
 
+async def plex_now_playing(services: Services) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        # Source of truth is Plex's own /status/sessions, NOT Tautulli's
+        # get_activity — found live 2026-07-02 that Tautulli was
+        # DISCONNECTED from Plex (stale 127.0.0.1/Windows config left over
+        # from the NAS's move to Docker), so its activity returned an empty
+        # {} even with a real stream playing while Plex reported it
+        # correctly. Plex is authoritative for live streams.
+        sessions = await services.plex.get_sessions()
+        transcoding = [s for s in sessions if s.get("is_transcoding")]
+        remote = [s for s in sessions if s.get("local") is False]
+        total_bw = sum(s.get("bandwidth_kbps") or 0 for s in sessions)
+        # Bottleneck flags computed in code, not left to model judgment:
+        # transcodes are CPU/GPU load, remote streams are WAN-upload load,
+        # a throttled transcode means the server can't keep up in realtime.
+        throttled = [s for s in transcoding if (s.get("transcode") or {}).get("throttled")]
+        flags = []
+        if len(transcoding) >= 2:
+            flags.append(f"{len(transcoding)} concurrent transcodes — CPU/GPU load")
+        if throttled:
+            flags.append(f"{len(throttled)} transcode(s) throttled — server may not be keeping up in real time")
+        if remote:
+            flags.append(f"{len(remote)} remote (WAN) stream(s) — upload-bandwidth load")
+        if total_bw >= 100_000:
+            flags.append(f"total stream bandwidth ~{round(total_bw / 1000)} Mbps")
+        return ToolResponse.success(
+            {
+                "stream_count": len(sessions),
+                "transcode_count": len(transcoding),
+                "remote_count": len(remote),
+                "total_bandwidth_mbps": round(total_bw / 1000, 1) if total_bw else 0,
+                "bottleneck_flags": flags,
+                "now_playing": [
+                    {
+                        "user": s.get("user"),
+                        "title": s.get("show") or s.get("title"),
+                        "detail": s.get("title") if s.get("show") else None,
+                        "type": s.get("type"),
+                        "state": s.get("state"),
+                        "progress_percent": s.get("progress_pct"),
+                        "player": s.get("player"),
+                        "where": "remote (WAN)" if s.get("local") is False else "local (LAN)",
+                        "playback": "transcode" if s.get("is_transcoding") else (s.get("stream_decision") or "direct"),
+                        "bandwidth_mbps": round((s.get("bandwidth_kbps") or 0) / 1000, 1),
+                        "source_resolution": s.get("source_resolution"),
+                        "transcode": s.get("transcode"),
+                    }
+                    for s in sessions
+                ],
+            }
+        )
+
+    return await safe_tool(run)
+
+
 async def plex_overview(
     services: Services,
     section: str = "all",

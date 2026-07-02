@@ -395,19 +395,25 @@ the Tautulli tools:
 names, emails, active flag). THIS is the tool for "how many users", \
 "what are their names", "who has access". Report the real names it \
 returns; never invent a count or names.
-- tautulli_now_playing — who is watching RIGHT NOW: live stream count, \
-each viewer's name, what they're watching, transcoding or not. THIS is \
-"how many people are watching" / "who's streaming".
+- plex_now_playing — who is watching RIGHT NOW, read straight from Plex \
+(authoritative, not Tautulli): stream count, each viewer's name, what \
+they're watching, local (LAN) vs remote (WAN), direct-play vs transcode, \
+per-stream bandwidth, and bottleneck_flags computed in code (concurrent \
+transcodes, throttled transcodes, remote streams, high total bandwidth). \
+THIS is "how many people are watching" / "who's streaming" / "is the \
+server struggling". Report bottleneck_flags verbatim when present.
 - tautulli_history — what was watched, by whom, when.
 - tautulli_user_stats — per-user viewing totals.
 Do NOT answer a question about users or who's watching from \
 jellyseerr_overview or nasdoom_requests_overview — those return REQUEST \
 counts (how many titles have been requested), not people. A "total: 12" \
 from a requests overview means 12 requested titles, not 12 viewers. Use \
-tautulli_users for the account roster and tautulli_now_playing for live \
-viewers.
+tautulli_users for the account roster and plex_now_playing for live \
+viewers. (Tautulli's own live activity is currently unreliable — it lost \
+its Plex connection in the NAS migration — so live-viewer questions go to \
+plex_now_playing, not Tautulli.)
 """,
-        "tools": {"tautulli_history", "tautulli_users", "tautulli_now_playing", "tautulli_user_stats"},
+        "tools": {"tautulli_history", "tautulli_users", "plex_now_playing", "tautulli_user_stats"},
     },
 }
 

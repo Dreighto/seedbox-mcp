@@ -47,19 +47,67 @@ class PlexClient:
         return [section.title for section in server.library.sections()]
 
     async def get_sessions(self) -> list[dict[str, Any]]:
-        server = self._server()
+        # Read /status/sessions raw rather than via plexapi's session
+        # objects — the raw payload carries the bottleneck-relevant fields
+        # (per-stream bandwidth, lan/wan location, transcode decision and
+        # throttle/speed, source vs streamed resolution) that plexapi
+        # flattens away. This is the authoritative live-stream source;
+        # Tautulli's get_activity is unreliable (found disconnected from
+        # Plex after the NAS's Windows->Docker migration, 2026-07-02).
+        session = self._session()
+        try:
+            resp = session.get(
+                f"{self.base_url}/status/sessions",
+                headers={"X-Plex-Token": self.token, "Accept": "application/json"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except requests.RequestException as exc:
+            raise UpstreamError(
+                "upstream_unreachable",
+                "Plex is unreachable or rejected credentials.",
+                {"reason": exc.__class__.__name__, "detail": str(exc)},
+            ) from exc
         results = []
-        for session in server.sessions():  # type: ignore[no-untyped-call]
-            duration = getattr(session, "duration", None)
-            offset = getattr(session, "viewOffset", None)
+        for m in payload.get("MediaContainer", {}).get("Metadata", []):
+            player = m.get("Player") or {}
+            sess = m.get("Session") or {}
+            transcode = m.get("TranscodeSession")
+            media = (m.get("Media") or [{}])[0]
+            part = (media.get("Part") or [{}])[0]
+            part_decision = part.get("decision")  # directplay | copy | transcode
+            duration = m.get("duration")
+            offset = m.get("viewOffset")
             progress_pct = round(offset / duration * 100, 1) if duration and offset is not None else None
             results.append(
                 {
-                    "title": getattr(session, "title", None),
-                    "type": getattr(session, "type", None),
-                    "user": getattr(getattr(session, "user", None), "title", None),
-                    "state": getattr(getattr(session, "session", None), "state", None),
+                    "title": m.get("title"),
+                    "show": m.get("grandparentTitle"),  # show name for an episode; None for a movie
+                    "type": m.get("type"),
+                    "user": (m.get("User") or {}).get("title"),
+                    "state": player.get("state"),
                     "progress_pct": progress_pct,
+                    "player": player.get("title"),
+                    # Bottleneck-relevant, per the operator's monitoring need:
+                    "local": player.get("local"),  # True = inside the network, False = remote
+                    "location": sess.get("location"),  # 'lan' | 'wan'
+                    "bandwidth_kbps": sess.get("bandwidth"),
+                    "source_resolution": media.get("videoResolution"),
+                    "source_bitrate_kbps": media.get("bitrate"),
+                    "stream_decision": part_decision,
+                    "is_transcoding": bool(transcode) or part_decision == "transcode",
+                    "transcode": (
+                        {
+                            "video_decision": transcode.get("videoDecision"),
+                            "audio_decision": transcode.get("audioDecision"),
+                            "throttled": transcode.get("throttled"),
+                            "speed": transcode.get("speed"),
+                            "progress": transcode.get("progress"),
+                        }
+                        if transcode
+                        else None
+                    ),
                 }
             )
         return results

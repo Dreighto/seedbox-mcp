@@ -47,7 +47,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_share_friend_revoke,
     nasdoom_share_friends_list,
 )
-from seedbox_mcp.tools.plex import plex_library_size, plex_overview
+from seedbox_mcp.tools.plex import plex_library_size, plex_now_playing, plex_overview
 from seedbox_mcp.tools.poster_ocr import poster_ocr
 from seedbox_mcp.tools.radarr import (
     radarr_add_movie,
@@ -77,7 +77,6 @@ from seedbox_mcp.tools.staleness import staleness_report
 from seedbox_mcp.tools.status import media_status
 from seedbox_mcp.tools.tautulli import (
     tautulli_history,
-    tautulli_now_playing,
     tautulli_user_stats,
     tautulli_users,
 )
@@ -627,16 +626,21 @@ def create_mcp(services: Services) -> FastMCP:
         from a request-count overview."""
         return await tautulli_users(services)
 
-    async def tautulli_now_playing_tool() -> dict[str, Any]:
-        """Who is watching RIGHT NOW — live Plex streams from Tautulli:
-        the current session count, each active viewer's username, what
-        they're watching, playback state, progress, and whether it's
-        transcoding. This is the real answer to "how many people are
-        watching" / "who's streaming" — never answer that from request
-        counts (jellyseerr_overview/nasdoom_requests_overview), which
-        count requested titles, not viewers. An empty now_playing list
-        means nobody is streaming."""
-        return await tautulli_now_playing(services)
+    async def plex_now_playing_tool() -> dict[str, Any]:
+        """Who is watching RIGHT NOW — live Plex streams read straight from
+        Plex's own /status/sessions (authoritative; do NOT rely on Tautulli
+        for this). Returns stream_count, and per stream: user, title,
+        local (LAN) vs remote (WAN), direct-play vs transcode, per-stream
+        bandwidth, source resolution, and transcode throttle/speed. Also
+        returns bottleneck_flags computed in code (concurrent transcodes,
+        throttled transcodes, remote streams, high total bandwidth) — the
+        answer to "who's watching and is the server struggling". This is
+        the real answer to "how many people are watching" / "who's
+        streaming"; never answer that from request counts
+        (jellyseerr_overview/nasdoom_requests_overview), which count
+        requested titles, not viewers. An empty now_playing list means
+        nobody is streaming."""
+        return await plex_now_playing(services)
 
     async def tautulli_user_stats_tool(
         user_id: int | None = None,
@@ -1051,7 +1055,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "staleness_report", READ_ONLY, staleness_report_tool)
     register_tool(mcp, "tautulli_history", READ_ONLY, tautulli_history_tool)
     register_tool(mcp, "tautulli_users", READ_ONLY, tautulli_users_tool)
-    register_tool(mcp, "tautulli_now_playing", READ_ONLY, tautulli_now_playing_tool)
+    register_tool(mcp, "plex_now_playing", READ_ONLY, plex_now_playing_tool)
     register_tool(mcp, "tautulli_user_stats", READ_ONLY, tautulli_user_stats_tool)
     register_tool(mcp, "nas_backup_health", READ_ONLY, nas_backup_health_tool)
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
