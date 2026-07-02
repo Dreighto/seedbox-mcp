@@ -5,8 +5,7 @@ from seedbox_mcp.tools.nasdoom import _is_theatrical_rip
 
 
 def test_availability_only_true_stream_states_are_watchable() -> None:
-    # The exact bug: status 3 (downloading) was reported as "on Plex".
-    assert _availability({"mediaInfo": {"status": 3}}) == "downloading"
+    # The exact bug: a title mid-processing was reported as "on Plex".
     assert _availability({"mediaInfo": {"status": 2}}) == "requested_pending_approval"
     assert _availability({"mediaInfo": {"status": 5}}) == "available"
     assert _availability({"mediaInfo": {"status": 4}}) == "partially_available"
@@ -16,7 +15,17 @@ def test_availability_only_true_stream_states_are_watchable() -> None:
     # Only 5/4 should ever be treated as streamable-now by callers.
     streamable = {"available", "partially_available"}
     assert _availability({"mediaInfo": {"status": 5}}) in streamable
-    assert _availability({"mediaInfo": {"status": 3}}) not in streamable
+
+
+def test_processing_splits_downloading_vs_waiting_on_downloadstatus() -> None:
+    # Status 3 with an active download-client item = actually downloading.
+    assert _availability({"mediaInfo": {"status": 3, "downloadStatus": [{"status": "downloading"}]}}) == "downloading"
+    # Status 3 with an empty downloadStatus = approved but nothing is
+    # downloading (e.g. not released yet) — the Toy Story 5 case. Must NOT
+    # read as "downloading".
+    waiting = _availability({"mediaInfo": {"status": 3, "downloadStatus": []}})
+    assert waiting == "approved_waiting_for_release"
+    assert waiting != "downloading"
 
 
 def test_flags_common_theatrical_rip_tags() -> None:

@@ -17,13 +17,17 @@ VALID_KINDS = {"movie", "tv"}
 
 # Jellyseerr MediaStatus enum. The distinction that matters for honesty:
 # only AVAILABLE (5) means actually watchable on Plex right now. Everything
-# else — pending approval, approved-and-downloading, even a watchlist-only
-# record — is NOT streamable yet, and must never be reported as "on Plex".
+# else — pending approval, approved, even a watchlist-only record — is NOT
+# streamable yet, and must never be reported as "on Plex".
 # PARTIALLY_AVAILABLE (4) is for a TV series with some but not all episodes.
+# Status 3 (PROCESSING) is deliberately NOT mapped here: it needs the
+# downloadStatus array to tell "actively downloading" apart from "approved
+# and waiting for a copy to exist" (see _availability). Reporting the second
+# as "downloading now" is misleading — for an unreleased title nothing is
+# downloading at all, it's just monitored.
 _MEDIA_STATUS = {
     1: "not_available",  # a record exists (e.g. watchlisted) but nothing is downloaded
     2: "requested_pending_approval",
-    3: "downloading",  # approved and processing — not watchable yet
     4: "partially_available",
     5: "available",  # actually on Plex, watchable now
 }
@@ -35,7 +39,15 @@ def _availability(result: dict[str, Any]) -> str:
     mi = result.get("mediaInfo")
     if not mi:
         return "not_in_library"
-    return _MEDIA_STATUS.get(mi.get("status"), "not_available")
+    status = mi.get("status")
+    if status == 3:
+        # PROCESSING: only call it "downloading" if the download-client
+        # status array actually has an active item. Empty means it's
+        # approved/monitored and waiting for a release to appear (e.g. the
+        # movie isn't out yet) — nothing is downloading.
+        active = mi.get("downloadStatus") or mi.get("downloadStatus4k")
+        return "downloading" if active else "approved_waiting_for_release"
+    return _MEDIA_STATUS.get(status, "not_available")
 
 
 def _year_from(result: dict[str, Any]) -> int | None:
@@ -76,6 +88,10 @@ async def jellyseerr_search(services: Services, query: str) -> dict[str, Any]:
                 # requested_pending_approval / not_available / not_in_library.
                 # ONLY "available" (and "partially_available" for a series)
                 # means it can actually be streamed right now.
+                # available / partially_available / downloading /
+                # approved_waiting_for_release / requested_pending_approval /
+                # not_available / not_in_library. Only "available" (and
+                # "partially_available" for a series) is streamable now.
                 "availability": _availability(r),
                 "streamable_now": _availability(r) in ("available", "partially_available"),
             }
