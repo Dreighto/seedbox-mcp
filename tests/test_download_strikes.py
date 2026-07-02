@@ -6,9 +6,11 @@ import pytest
 
 from seedbox_mcp import download_strikes
 from seedbox_mcp.download_strikes import (
+    SAB_HISTORY_WARN_THRESHOLD,
     STRIKE_THRESHOLD,
     classify_queue_item,
     run_download_strike_check,
+    sab_history_advisory,
     update_strikes,
 )
 
@@ -111,6 +113,17 @@ def test_item_without_download_id_is_skipped() -> None:
     assert state == {} and to_act == []
 
 
+def test_sab_history_advisory_quiet_below_threshold() -> None:
+    assert sab_history_advisory(6) is None
+    assert sab_history_advisory(SAB_HISTORY_WARN_THRESHOLD - 1) is None
+    assert sab_history_advisory(None) is None
+
+
+def test_sab_history_advisory_fires_near_the_60_window() -> None:
+    note = sab_history_advisory(SAB_HISTORY_WARN_THRESHOLD)
+    assert note is not None and "60" in note and "Remove Completed" in note
+
+
 class _FakeArr:
     def __init__(self, records: list[dict[str, Any]]) -> None:
         self._records = records
@@ -127,6 +140,7 @@ class _FakeServices:
     def __init__(self, radarr: _FakeArr) -> None:
         self.radarr = radarr
         self.sonarr = None
+        self.sabnzbd = None  # history advisory is skipped when None
 
 
 @pytest.mark.asyncio

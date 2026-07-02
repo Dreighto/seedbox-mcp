@@ -29,6 +29,30 @@ STRIKE_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_do
 _STALL_MARKERS = ("stall", "no connections", "no files found", "no peers", "no seeds")
 _IMPORT_MARKERS = ("import", "permission", "no files eligible")
 
+# Sonarr/Radarr only inspect the 60 most recent items in the SABnzbd/NZBGet
+# history when reconciling completed downloads; anything older than that
+# window is silently skipped for import. With removeCompletedDownloads on
+# (verified enabled here) the history stays tiny, so this never bites — but
+# if that setting drifts off, or history balloons for another reason, older
+# completed downloads start getting silently missed. Warn at 45, comfortably
+# below the 60 cliff, so it's caught before any import is actually skipped.
+SAB_HISTORY_WARN_THRESHOLD = 45
+
+
+def sab_history_advisory(noofslots: int | None) -> str | None:
+    """Pure: given SABnzbd's total-kept history count, return an advisory
+    note if it's grown near the 60-item window Sonarr/Radarr reconcile
+    against, else None."""
+    if isinstance(noofslots, int) and noofslots >= SAB_HISTORY_WARN_THRESHOLD:
+        return (
+            f"SABnzbd download history has grown to {noofslots} items, approaching the 60-item "
+            "window Sonarr/Radarr scan when reconciling completed downloads. Past 60, older "
+            "finished downloads can be silently skipped for import. Check that 'Remove Completed' "
+            "is still enabled on the SABnzbd client in both arrs (it keeps history small), or purge "
+            "old history."
+        )
+    return None
+
 
 def _messages_text(item: dict[str, Any]) -> str:
     parts = [str(item.get("errorMessage") or "")]
@@ -213,4 +237,12 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
             f"{len(import_issues)} download(s) stuck on import, likely a permissions or path issue "
             f"(NOT auto-fixed, since re-downloading won't fix that): {titles}. Worth a look."
         )
+    if services.sabnzbd is not None:
+        try:
+            hist = await services.sabnzbd.history(limit=1)
+            advisory = sab_history_advisory((hist.get("history") or {}).get("noofslots"))
+            if advisory:
+                notes.append(advisory)
+        except Exception:
+            logger.exception("SABnzbd history advisory check failed (non-fatal)")
     return "\n".join(notes) if notes else None
