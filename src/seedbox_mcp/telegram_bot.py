@@ -309,17 +309,21 @@ from the library isn't part of what you can do yet.
         "keywords": [
             "web", "internet", "online", "look up", "lookup", "google", "error", "latest",
             "news", "best practice", "recommend", "better", "improve", "suggestion",
+            "out yet", "released", "release date", "when does", "when is", "streaming yet",
         ],
         "prompt": """\
-For anything needing current outside information — an error message you \
-don't recognize, current best practices, a new tool worth considering — \
-use web_search (and web_fetch to read a specific result in full). Don't \
-answer from possibly-stale training knowledge when a quick search would \
-give a real answer. Proactive suggestions are fine — just be clear it's a \
-suggestion; actually adding new infrastructure is escalate_to_worker \
-territory.
+For "is X out yet / released / streaming yet", "when does X come out", or \
+"is season N of X out": use content_release_status — it returns a \
+synthesized, cited answer (release date, streaming platform, physical/\
+digital availability) and is more accurate and far leaner than raw search \
+for release timing. For general outside information (an error you don't \
+recognize, current best practices, a new tool worth considering): use \
+web_search, and web_fetch to read one result in full. Don't answer from \
+possibly-stale training knowledge when a quick lookup would give a real \
+answer. Proactive suggestions are fine, just flag them as suggestions; \
+actually adding infrastructure is escalate_to_worker territory.
 """,
-        "tools": {"web_search", "web_fetch"},
+        "tools": {"web_search", "web_fetch", "content_release_status"},
     },
     "find": {
         "keywords": ["sample", "music", "software", "game", "book", "kit", "prowlarr", "usenet", "find "],

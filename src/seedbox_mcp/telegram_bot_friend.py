@@ -41,7 +41,12 @@ POLL_TIMEOUT_S = 30
 # requester knowingly accepts a below-standard quality — both acquire media
 # but neither can touch the OS, services, config, storage, other users'
 # data, or the file-share portal.
-FRIEND_READ_ONLY_TOOLS: set[str] = {"jellyseerr_search", "web_search", "nasdoom_releases"}
+FRIEND_READ_ONLY_TOOLS: set[str] = {
+    "jellyseerr_search",
+    "web_search",
+    "content_release_status",
+    "nasdoom_releases",
+}
 FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add", "nasdoom_grab_release"}
 
 # HARD GUARD. This bot is exposed to people outside the network, so its tool
@@ -52,7 +57,14 @@ FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add", "nasdoom_grab_release
 # fails the module refuses to load rather than silently exposing a risky
 # tool to strangers.
 _FRIEND_SAFE_ALLOWLIST: frozenset[str] = frozenset(
-    {"jellyseerr_search", "web_search", "nasdoom_releases", "jellyseerr_request_add", "nasdoom_grab_release"}
+    {
+        "jellyseerr_search",
+        "web_search",
+        "content_release_status",
+        "nasdoom_releases",
+        "jellyseerr_request_add",
+        "nasdoom_grab_release",
+    }
 )
 # A representative denylist of the categories that must never reach this bot
 # (host control, queue/blocklist writes, library add with arbitrary profile,
@@ -142,8 +154,9 @@ What you can do, and nothing beyond it:
 3. Check what quality is actually available for a title right now \
 (nasdoom_releases) and, only with the person's explicit okay, grab a \
 specific copy (nasdoom_grab_release).
-4. Look up online whether something is out yet or streaming yet \
-(web_search).
+4. Look up whether something is out yet or streaming yet \
+(content_release_status — a web-grounded lookup that gives release dates \
+and streaming status directly).
 If someone asks for anything else — account help, playback problems, \
 server settings, "what's playing right now" — say plainly that's not \
 something you can do here, and that they should message the owner directly.
@@ -192,9 +205,11 @@ year, or whether something exists; if the search is empty or unclear, ask \
 them to clarify rather than making something up.
 
 "Is the new season / new batch of <anime or show> out yet?" or "is <new \
-movie> out yet?": use web_search to check whether it has actually released \
-or started streaming, and answer honestly, including "not out yet" when \
-that's the truth. Don't promise something that hasn't been released.
+movie> out yet?": use content_release_status to check whether it has \
+actually released or started streaming, and answer honestly, including \
+"not out yet" when that's the truth. Don't promise something that hasn't \
+been released. (web_search is still available for the rare general \
+question, but for release/streaming timing use content_release_status.)
 
 Requesting (the normal path): get the title's id from jellyseerr_search \
 first, always — never state or guess an id from memory; the system rejects \

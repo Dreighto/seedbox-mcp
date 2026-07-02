@@ -7,6 +7,7 @@ from seedbox_mcp.clients.arr import ArrClient
 from seedbox_mcp.clients.dispatch import DispatchClient
 from seedbox_mcp.clients.nasdoom import NasdoomClient
 from seedbox_mcp.clients.ollama_web import OllamaWebClient
+from seedbox_mcp.clients.perplexity import PerplexityClient
 from seedbox_mcp.clients.plex import PlexClient
 from seedbox_mcp.clients.sabnzbd import SabnzbdClient
 from seedbox_mcp.clients.tautulli import TautulliClient
@@ -29,6 +30,7 @@ class Services:
     nasdoom: NasdoomClient | None = None
     dispatch: DispatchClient | None = None
     ollama_web: OllamaWebClient | None = None
+    perplexity: PerplexityClient | None = None
     apple_ocr: AppleOcrClient | None = None
 
 
@@ -61,6 +63,9 @@ def build_services(settings: Settings) -> Services:
     ollama_web = None
     if settings.ollama_web_search_api_key:
         ollama_web = OllamaWebClient(settings.ollama_web_search_api_key.get_secret_value())
+    perplexity = None
+    if settings.perplexity_api_key:
+        perplexity = PerplexityClient(settings.perplexity_api_key.get_secret_value())
     apple_ocr = None
     if settings.apple_ocr_enabled and settings.apple_ocr_base_url:
         apple_ocr = AppleOcrClient(settings.apple_ocr_base_url)
@@ -76,5 +81,6 @@ def build_services(settings: Settings) -> Services:
         nasdoom=nasdoom,
         dispatch=dispatch,
         ollama_web=ollama_web,
+        perplexity=perplexity,
         apple_ocr=apple_ocr,
     )

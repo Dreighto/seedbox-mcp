@@ -89,7 +89,7 @@ from seedbox_mcp.tools.tautulli import (
     tautulli_user_stats,
     tautulli_users,
 )
-from seedbox_mcp.tools.web_search import web_fetch, web_search
+from seedbox_mcp.tools.web_search import content_release_status, web_fetch, web_search
 
 logger = logging.getLogger("seedbox_mcp")
 
@@ -686,6 +686,18 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def content_release_status_tool(query: str) -> dict[str, Any]:
+        """Answer whether a movie/show/anime is out yet, streaming yet, or
+        has a new season/batch out — via Perplexity's web-grounded search,
+        which returns a synthesized, cited answer (release dates, current
+        streaming platform, physical/digital availability) instead of raw
+        search results. USE THIS for any "is X out / streaming / released
+        yet", "when does X come out", "is season N of X out" question — it's
+        more accurate and far leaner than web_search for release timing.
+        Use web_search (not this) for general research. Phrase `query` as a
+        direct natural-language question."""
+        return await content_release_status(services, query)
+
     async def web_search_tool(query: str, max_results: int = 5) -> dict[str, Any]:
         """Search the live web (Ollama's hosted search API) — use this for
         anything needing current/outside information the NAS's own tools
@@ -1126,6 +1138,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_storage_inventory", READ_ONLY, nas_storage_inventory_tool)
     register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
     register_tool(mcp, "web_search", READ_ONLY, web_search_tool)
+    register_tool(mcp, "content_release_status", READ_ONLY, content_release_status_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)

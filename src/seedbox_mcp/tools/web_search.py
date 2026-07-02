@@ -32,6 +32,27 @@ async def web_search(services: Services, query: str, max_results: int = 5) -> di
     return await safe_tool(run)
 
 
+async def content_release_status(services: Services, query: str) -> dict[str, Any]:
+    async def run() -> dict[str, Any]:
+        if not services.perplexity:
+            # Fall back to plain web search if Perplexity isn't configured, so
+            # the capability degrades rather than disappears.
+            if services.ollama_web:
+                return await web_search(services, query)
+            return ToolResponse.failure("not_configured", "No web search provider is configured.")
+        data = await services.perplexity.search(query, max_tokens=500)
+        return ToolResponse.success(
+            {
+                "query": query,
+                "answer": data.get("answer", ""),
+                "citations": data.get("citations", [])[:5],
+                "source": "perplexity-sonar",
+            }
+        )
+
+    return await safe_tool(run)
+
+
 async def web_fetch(services: Services, url: str) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.ollama_web:

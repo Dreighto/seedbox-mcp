@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     # there's no URL/host to also configure.
     ollama_web_search_api_key: SecretStr | None = None
 
+    # Perplexity sonar (api.perplexity.ai) for release/availability-timing
+    # questions — same key the LogueOS Gateway uses. Presence gates the
+    # content_release_status tool; general web research still uses Ollama.
+    perplexity_api_key: SecretStr | None = None
+
     # SSH target for host-level NAS diagnostics (SMART disk health, Docker
     # service control) — the media stack's disks and containers live on the
     # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
@@ -159,6 +164,7 @@ class Settings(BaseSettings):
         "nasdoom_helper_telegram_bot_token",
         "dispatch_hmac_secret",
         "ollama_web_search_api_key",
+        "perplexity_api_key",
         mode="before",
     )
     @classmethod

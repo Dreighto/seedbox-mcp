@@ -76,6 +76,7 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_profiles",
     "web_search",
     "web_fetch",
+    "content_release_status",
     "poster_ocr",
     "jellyseerr_search",
     "nasdoom_releases",
