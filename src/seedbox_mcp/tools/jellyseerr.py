@@ -15,6 +15,28 @@ def _unavailable() -> dict[str, Any]:
 
 VALID_KINDS = {"movie", "tv"}
 
+# Jellyseerr MediaStatus enum. The distinction that matters for honesty:
+# only AVAILABLE (5) means actually watchable on Plex right now. Everything
+# else — pending approval, approved-and-downloading, even a watchlist-only
+# record — is NOT streamable yet, and must never be reported as "on Plex".
+# PARTIALLY_AVAILABLE (4) is for a TV series with some but not all episodes.
+_MEDIA_STATUS = {
+    1: "not_available",  # a record exists (e.g. watchlisted) but nothing is downloaded
+    2: "requested_pending_approval",
+    3: "downloading",  # approved and processing — not watchable yet
+    4: "partially_available",
+    5: "available",  # actually on Plex, watchable now
+}
+
+
+def _availability(result: dict[str, Any]) -> str:
+    """Precise streamable state from Jellyseerr's mediaInfo. No mediaInfo at
+    all → nothing in the system yet (fully requestable)."""
+    mi = result.get("mediaInfo")
+    if not mi:
+        return "not_in_library"
+    return _MEDIA_STATUS.get(mi.get("status"), "not_available")
+
 
 def _year_from(result: dict[str, Any]) -> int | None:
     date = result.get("releaseDate") or result.get("firstAirDate")
@@ -49,11 +71,27 @@ async def jellyseerr_search(services: Services, query: str) -> dict[str, Any]:
                 "year": _year_from(r),
                 "tmdb_id": r.get("id"),
                 "overview": r.get("overview"),
-                "already_in_library_or_requested": bool(r.get("mediaInfo")),
+                # Precise, not a boolean: availability is one of
+                # available / partially_available / downloading /
+                # requested_pending_approval / not_available / not_in_library.
+                # ONLY "available" (and "partially_available" for a series)
+                # means it can actually be streamed right now.
+                "availability": _availability(r),
+                "streamable_now": _availability(r) in ("available", "partially_available"),
             }
             for r in filtered[:10]
         ]
-        return ToolResponse.success({"query": query, "titles": titles, "filtered_out": dropped})
+        return ToolResponse.success(
+            {
+                "query": query,
+                "titles": titles,
+                "filtered_out": dropped,
+                "note": "streamable_now / availability tell the truth about whether a title can "
+                "actually be watched NOW. 'downloading' and 'requested_pending_approval' mean it is "
+                "NOT on Plex yet, only on the way. Never tell someone a title is on Plex unless "
+                "streamable_now is true.",
+            }
+        )
 
     return await safe_tool(run)
 

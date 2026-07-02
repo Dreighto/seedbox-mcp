@@ -1,6 +1,22 @@
 from __future__ import annotations
 
+from seedbox_mcp.tools.jellyseerr import _availability
 from seedbox_mcp.tools.nasdoom import _is_theatrical_rip
+
+
+def test_availability_only_true_stream_states_are_watchable() -> None:
+    # The exact bug: status 3 (downloading) was reported as "on Plex".
+    assert _availability({"mediaInfo": {"status": 3}}) == "downloading"
+    assert _availability({"mediaInfo": {"status": 2}}) == "requested_pending_approval"
+    assert _availability({"mediaInfo": {"status": 5}}) == "available"
+    assert _availability({"mediaInfo": {"status": 4}}) == "partially_available"
+    assert _availability({"mediaInfo": {"status": 1}}) == "not_available"
+    # No mediaInfo at all → nothing in the system.
+    assert _availability({}) == "not_in_library"
+    # Only 5/4 should ever be treated as streamable-now by callers.
+    streamable = {"available", "partially_available"}
+    assert _availability({"mediaInfo": {"status": 5}}) in streamable
+    assert _availability({"mediaInfo": {"status": 3}}) not in streamable
 
 
 def test_flags_common_theatrical_rip_tags() -> None:
