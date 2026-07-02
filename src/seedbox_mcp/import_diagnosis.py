@@ -70,6 +70,17 @@ async def _arr_mounts(services: Services, container: str) -> list[tuple[str, str
     return _parse_mounts(out) if rc == 0 else []
 
 
+def _arr_reason(item: dict[str, Any]) -> str:
+    """The arr's own words for why an item won't import, from statusMessages
+    (+ errorMessage). This is the authoritative reason and must be consulted
+    before any filesystem guess."""
+    parts = [str(item.get("errorMessage") or "")]
+    for sm in item.get("statusMessages") or []:
+        if isinstance(sm, dict):
+            parts.extend(str(m) for m in (sm.get("messages") or []))
+    return " ".join(p for p in parts if p).strip()
+
+
 async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) -> dict[str, Any]:
     meta = _ARR_META[source]
     container = str(meta["container"])
@@ -77,9 +88,46 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
     title = (item.get("movie") or item.get("series") or {}).get("title") or item.get("title") or "unknown"
     result: dict[str, Any] = {"title": title, "source": source, "output_path": output_path}
 
+    # The arr's OWN reason comes first — it's authoritative and often has
+    # nothing to do with the filesystem (a title mismatch, a sample, a
+    # not-an-upgrade rejection). Only fall through to the permission/path
+    # access check when the message points at the filesystem or is absent.
+    reason = _arr_reason(item)
+    low = reason.lower()
+    result["arr_reason"] = reason or None
+    match_markers = ("mismatch", "matched to", "unknown", "not found", "no files found are eligible")
+    if any(m in low for m in match_markers):
+        result["diagnosis"] = "match_problem"
+        result["explanation"] = (
+            f'{source} reports: "{reason}". This is a MATCHING problem, not permissions: {source} '
+            "can't confidently tie this release to a title in its library (wrong/ambiguous name, the "
+            "title isn't added, or a year/edition mismatch). The fix is a manual import / correcting "
+            "the match in the arr, not a chown. Do NOT just blocklist-and-redownload; a fresh copy "
+            "will hit the same mismatch."
+        )
+        result["remediation_note"] = "Manual import / match correction in the arr UI (or escalate); not a bot action."
+        return result
+    if "sample" in low:
+        result["diagnosis"] = "sample_file"
+        result["explanation"] = (
+            f'{source} reports: "{reason}". The download is a sample, not the real file; it will never import.'
+        )
+        result["remediation_note"] = "Safe to remove+blocklist and re-search for a real release."
+        return result
+    if "not an upgrade" in low or "already" in low:
+        result["diagnosis"] = "not_an_upgrade"
+        result["explanation"] = (
+            f'{source} reports: "{reason}". The existing file is equal or better, so this copy was '
+            "correctly skipped. Benign."
+        )
+        return result
+
     if not output_path:
         result["diagnosis"] = "no_output_path"
-        result["explanation"] = "The queue item has no output path yet; too early to diagnose an import failure."
+        result["explanation"] = (
+            f'{source} gave no output path and its reason was {reason or "empty"}; too early or too vague '
+            "to diagnose. Try nas_log_search for this release name to see the arr's own log detail."
+        )
         return result
 
     # Run the real access tests AS the arr's own UID inside its own
@@ -160,8 +208,8 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
     result["explanation"] = (
         "The arr can read the download and write the library, so this import failure is not a simple "
         "permissions or path problem. Likely candidates: a still-unpacking/_UNPACK_ archive, a "
-        "sample/incomplete file, or an unusual naming/qualification mismatch. Worth reading the arr's "
-        "trace log for this release, or escalating."
+        "sample/incomplete file, or an unusual naming/qualification mismatch. Next step: nas_log_search "
+        f"the {source} log for this release name to see the arr's own detailed reason, then escalate."
     )
     return result
 

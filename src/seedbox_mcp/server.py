@@ -24,7 +24,12 @@ from seedbox_mcp.tools.downloads import (
     sabnzbd_overview,
 )
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
-from seedbox_mcp.tools.host_health import nas_disk_health, nas_service_restart, nas_service_status
+from seedbox_mcp.tools.host_health import (
+    nas_disk_health,
+    nas_log_search,
+    nas_service_restart,
+    nas_service_status,
+)
 from seedbox_mcp.tools.jellyseerr import jellyseerr_request_add, jellyseerr_search
 from seedbox_mcp.tools.nas_network import nas_internet_speed_test
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
@@ -959,6 +964,16 @@ def create_mcp(services: Services) -> FastMCP:
         the operator asks why something won't import / finish."""
         return await nas_import_diagnosis(services)
 
+    async def nas_log_search_tool(service: str, query: str, lines: int = 40) -> dict[str, Any]:
+        """Search a media app's own logs on the NAS (radarr/sonarr/prowlarr)
+        for a term — the deep-diagnosis step when queue/status signals aren't
+        specific enough. Read-only; returns the last matching log lines from
+        the newest few log files. Use it to find the arr's own detailed
+        reason for a rejected/failed release (search the release name), a
+        failed search, or an error. If nas_import_diagnosis returns a vague
+        result, search the release name here for the underlying detail."""
+        return await nas_log_search(services, service, query, lines)
+
     async def nas_disk_health_tool() -> dict[str, Any]:
         """Physical disk health for every drive on the NAS via SMART. Each
         disk gets a verdict computed in code from Backblaze failure-rate
@@ -1129,6 +1144,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_releases", READ_ONLY, nasdoom_releases_tool)
     register_tool(mcp, "nasdoom_grab_release", WRITE, nasdoom_grab_release_tool)
     register_tool(mcp, "nas_import_diagnosis", READ_ONLY, nas_import_diagnosis_tool)
+    register_tool(mcp, "nas_log_search", READ_ONLY, nas_log_search_tool)
     register_tool(mcp, "nas_disk_health", READ_ONLY, nas_disk_health_tool)
     register_tool(mcp, "nas_service_status", READ_ONLY, nas_service_status_tool)
     register_tool(mcp, "nas_service_restart", WRITE, nas_service_restart_tool)

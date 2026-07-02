@@ -82,6 +82,7 @@ READ_ONLY_TOOLS: set[str] = {
     "nas_disk_health",
     "nas_service_status",
     "nas_import_diagnosis",
+    "nas_log_search",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview

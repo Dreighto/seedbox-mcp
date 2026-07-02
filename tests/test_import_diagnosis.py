@@ -1,6 +1,26 @@
 from __future__ import annotations
 
-from seedbox_mcp.import_diagnosis import _parse_mounts, translate_to_host
+from seedbox_mcp.import_diagnosis import _arr_reason, _parse_mounts, translate_to_host
+
+
+def test_arr_reason_pulls_the_real_message_from_status_messages() -> None:
+    # The live case: a Sonarr importblocked item's real reason lives in
+    # statusMessages, not errorMessage.
+    item = {
+        "errorMessage": "",
+        "statusMessages": [
+            {"title": "release.name", "messages": ["Series title mismatch; automatic import is not possible."]}
+        ],
+    }
+    reason = _arr_reason(item)
+    assert "title mismatch" in reason.lower()
+    # And this is what the classifier keys on for match_problem (not perms).
+    assert "mismatch" in reason.lower()
+
+
+def test_arr_reason_empty_when_nothing_reported() -> None:
+    assert _arr_reason({}) == ""
+    assert _arr_reason({"errorMessage": None, "statusMessages": []}) == ""
 
 # Real radarr mount string shape (host paths include a space in "Anime Movies").
 _RADARR_RAW = (

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from typing import Any
@@ -220,6 +221,59 @@ async def nas_service_restart(services: Services, name: str, confirm: bool = Fal
                 "state_before": state_before,
                 "state_after": state_after,
                 "verified_running": state_after == "running",
+            }
+        )
+
+    return await safe_tool(run)
+
+
+# Services whose logs live at /opt/<svc>/config/logs/<svc>*.txt on the NAS
+# (LinuxServer arr/prowlarr layout). Read-only allowlist — the log reader
+# can only look at these known application logs, never arbitrary host paths.
+_LOG_SERVICES: set[str] = {"radarr", "sonarr", "prowlarr"}
+
+
+async def nas_log_search(services: Services, service: str, query: str, lines: int = 40) -> dict[str, Any]:
+    """Search a media app's own logs on the NAS for a term — the deep-
+    diagnosis step when a status/queue signal isn't specific enough (why a
+    release was rejected, why a search failed, what an error actually was).
+    Read-only: greps the newest few log files for `query` and returns the
+    last matching lines. `service` is one of radarr/sonarr/prowlarr."""
+
+    async def run() -> dict[str, Any]:
+        if service not in _LOG_SERVICES:
+            return ToolResponse.failure(
+                "not_permitted", f"{service!r} has no searchable log here.", {"allowed": sorted(_LOG_SERVICES)}
+            )
+        if not query or not query.strip():
+            return ToolResponse.failure("validation", "A non-empty search term is required.")
+        n = max(1, min(lines, 200))
+        logdir = f"/opt/{service}/config/logs"
+        # base64-encode the query locally, decode it remotely, so the
+        # untrusted search term never reaches the shell as code (base64 is a
+        # shell-safe alphabet). Newest 3 log files, case-insensitive grep,
+        # keep the last n matches.
+        q_b64 = base64.b64encode(query.encode()).decode()
+        cmd = (
+            f'q=$(printf %s "{q_b64}" | base64 -d); '
+            f"files=$(ls -t {logdir}/{service}*.txt 2>/dev/null | head -3); "
+            f'[ -z "$files" ] && echo "__NO_LOGS__" || grep -ih -e "$q" $files | tail -{n}'
+        )
+        rc, out, err = await _run_on_nas(services, cmd, timeout=30.0)
+        if rc != 0 and not out:
+            return ToolResponse.failure("nas_unreachable", "Couldn't read the logs over SSH.", {"detail": err[:200]})
+        if out.strip() == "__NO_LOGS__":
+            return ToolResponse.failure("no_logs", f"No log files found for {service}.")
+        matches = [ln for ln in out.splitlines() if ln.strip()]
+        return ToolResponse.success(
+            {
+                "service": service,
+                "query": query,
+                "match_count": len(matches),
+                "lines": matches,
+                "note": "Last matching log lines (newest few log files). Empty match_count means the term "
+                "didn't appear — the detail may be at a higher log level (Trace) that isn't enabled, or "
+                "the event predates the current logs.",
             }
         )
 
