@@ -210,7 +210,9 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     task = (
         "Run your check cycle now. Call each of these exactly once, in this order, "
         "before deciding whether anything needs a report: nasdoom_health, nasdoom_queue, "
-        "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats. "
+        "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats, "
+        "nas_disk_health. Disk verdicts (ok/watch/replace_now) are computed in code; a watch or "
+        "replace_now verdict is ALWAYS report-worthy, quoted with its exact reasons. "
         "Note: the queue's paused state has already been checked and auto-corrected before you "
         "started, by a separate deterministic step — don't try to fix it again yourself, just "
         "report its current (already-correct) state like any other check."

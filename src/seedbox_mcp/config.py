@@ -119,6 +119,12 @@ class Settings(BaseSettings):
     # there's no URL/host to also configure.
     ollama_web_search_api_key: SecretStr | None = None
 
+    # SSH target for host-level NAS diagnostics (SMART disk health, Docker
+    # service control) — the media stack's disks and containers live on the
+    # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
+    # no password prompt; unset disables the host_health tools.
+    nas_ssh_target: str | None = None
+
     oauth_access_token_ttl: int = Field(default=3600, gt=0)
     oauth_state_path: Path = Path(".oauth_state.json")
 

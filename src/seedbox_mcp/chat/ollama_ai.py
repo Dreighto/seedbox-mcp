@@ -77,6 +77,8 @@ READ_ONLY_TOOLS: set[str] = {
     "web_fetch",
     "poster_ocr",
     "jellyseerr_search",
+    "nas_disk_health",
+    "nas_service_status",
 }
 
 # Actions the harness may take, gated by the confirm=false|true preview
@@ -122,6 +124,11 @@ ACTION_TOOLS: set[str] = {
     "radarr_blocklist_remove",
     "sonarr_blocklist_remove",
     "jellyseerr_request_add",
+    # nas_service_restart is a real service interruption but bounded (the
+    # tool itself enforces a media-stack allowlist and verifies the
+    # post-restart state in code) — same "safety mechanism earns the spot"
+    # logic as nasdoom_find_grab above.
+    "nas_service_restart",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
@@ -129,6 +136,17 @@ ACTION_TOOLS: set[str] = {
 # READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS deliberately rather than
 # getting it bundled into either tier by accident.
 ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
+
+# Tools whose confirm=true must come in a LATER turn than their preview —
+# the model may not self-approve within one turn. Adversarial testing
+# (2026-07-01) caught the bot previewing a service restart, seeing the
+# service was actually RUNNING (contradicting the operator's "seems down"
+# premise), and firing confirm=true anyway "for good measure", all in one
+# turn. For an action that interrupts a live service, the preview exists
+# so the OPERATOR sees the current state before it runs — enforced here
+# by timestamp (preview created during the current run_agent_turn call →
+# confirm rejected), not by trusting the model to pause.
+CROSS_TURN_CONFIRM_TOOLS: set[str] = {"nas_service_restart"}
 
 # Entity-ID provenance gate — generalizes the same "don't trust the model's
 # own regeneration, verify against real state" principle behind
@@ -359,6 +377,7 @@ async def run_agent_turn(
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
     known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS
+    turn_started_ts = time.time()
     async with mcp_client:
         raw_tools = await mcp_client.list_tools()
     if allowed_tools is not None:
@@ -460,6 +479,28 @@ async def run_agent_turn(
                                     '"No matching preview is currently pending for this exact action. '
                                     "Call with confirm=false first to preview it, then confirm=true "
                                     'right after — a confirm=true out of nowhere is not authorized."}'
+                                ),
+                            }
+                        )
+                        continue
+                    if (
+                        name in CROSS_TURN_CONFIRM_TOOLS
+                        and pending_action is not None
+                        and pending_action.get("ts", 0) >= turn_started_ts
+                    ):
+                        logger.error(
+                            "ollama_ai BLOCKED same-turn confirm for cross-turn tool: %s(%s)", name, args
+                        )
+                        record_action(name, args, dry_run=True, outcome="blocked_same_turn_confirm")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "content": (
+                                    '{"ok": false, "error_type": "not_permitted", "message": '
+                                    '"This action needs the operator\'s explicit go-ahead in their NEXT '
+                                    "message. The preview ran; now STOP, show the operator the preview's "
+                                    "current state, and wait — do not confirm in the same turn, and do "
+                                    'not re-preview."}'
                                 ),
                             }
                         )

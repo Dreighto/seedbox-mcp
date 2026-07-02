@@ -342,6 +342,46 @@ conversation unless asked to re-test.
 """,
         "tools": {"nas_internet_speed_test"},
     },
+    "host": {
+        "keywords": [
+            "disk", "drive", "smart", "nvme", "ssd", "hdd", "hard drive", "dying", "failing",
+            "restart", "container", "docker", "down", "unreachable", "crashed", "hung",
+            "not responding", "offline", "service",
+        ],
+        "prompt": """\
+Host-level diagnostics for the NAS box itself:
+- nas_disk_health — SMART health for every physical drive. Verdicts \
+(ok/watch/replace_now) are computed in code from real failure-rate \
+thresholds; report them and their reasons EXACTLY as returned. Never \
+soften a replace_now, never call a disk healthy on your own judgment, \
+and never state an attribute value the tool didn't return.
+- nas_service_status — the media-stack Docker containers' actual state. \
+nasdoom_health checks the services' APIs; this checks the containers. \
+When an API is down, check the container before assuming anything.
+- nas_service_restart — restart one media container. These host tools \
+are loaded whenever you can read this paragraph — never tell the \
+operator you're "not set up" for a restart or that a new message would \
+load the tool; that's false. When asked to restart something, run the \
+confirm=false preview and let the tool's own allowlist decide: if it \
+returns not_permitted, give the operator the REAL reason (that service \
+is shared infrastructure, off the restart allowlist on purpose) and \
+offer escalate_to_worker — don't invent a different explanation and \
+don't retry with name variations. The preview shows the container's \
+current state; show that to the operator and STOP — the harness only \
+accepts confirm=true in a later turn, after they've replied, and it \
+will reject a same-turn confirm. If the preview contradicts what the \
+operator believed (they said it's down, preview says running), lead \
+with that. After a confirmed restart, report the returned \
+state_after/verified_running values; if verified_running is false, say \
+the restart did NOT bring it back and escalate — never claim a service \
+recovered without that flag.
+A useful diagnostic chain when something's broken: nasdoom_health (API \
+reachable?) → nas_service_status (container running?) → \
+nas_service_restart if stopped/unhealthy → re-check nasdoom_health → \
+escalate_to_worker if still broken, saying exactly what you tried.
+""",
+        "tools": {"nas_disk_health", "nas_service_status", "nas_service_restart"},
+    },
     "stats": {
         "keywords": ["who watched", "history", "viewing", "stats", "tautulli", "watched"],
         "prompt": """\

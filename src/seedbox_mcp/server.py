@@ -23,6 +23,7 @@ from seedbox_mcp.tools.downloads import (
     sabnzbd_overview,
 )
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
+from seedbox_mcp.tools.host_health import nas_disk_health, nas_service_restart, nas_service_status
 from seedbox_mcp.tools.jellyseerr import jellyseerr_request_add, jellyseerr_search
 from seedbox_mcp.tools.nas_network import nas_internet_speed_test
 from seedbox_mcp.tools.nas_storage import nas_backup_health, nas_storage_inventory
@@ -913,6 +914,36 @@ def create_mcp(services: Services) -> FastMCP:
             services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
         )
 
+    async def nas_disk_health_tool() -> dict[str, Any]:
+        """Physical disk health for every drive on the NAS via SMART. Each
+        disk gets a verdict computed in code from Backblaze failure-rate
+        thresholds: 'ok', 'watch', or 'replace_now', with the exact
+        attribute values as reasons. Report the verdicts and reasons as
+        given — never soften a 'replace_now' or upgrade an 'ok'."""
+        return await nas_disk_health(services)
+
+    async def nas_service_status_tool(name: str | None = None) -> dict[str, Any]:
+        """State of the media-stack Docker containers on the NAS (plex,
+        radarr, sonarr, prowlarr, sabnzbd, jellyseerr, tautulli, kometa,
+        recyclarr, filebrowser). Omit name for all; pass one name for
+        just that service. Distinct from nasdoom_health, which checks the
+        services' APIs — this checks the containers themselves, so use it
+        when an API is unreachable to see whether the container is even
+        running."""
+        return await nas_service_status(services, name)
+
+    async def nas_service_restart_tool(name: str, confirm: bool = False) -> dict[str, Any]:
+        """Restart one media-stack container on the NAS. Only the
+        allowlisted media services can be restarted — shared infrastructure
+        (n8n, ollama, cloudflared) is refused; escalate those instead.
+
+        Two-step: confirm=false (default) previews the current container
+        state without doing anything. confirm=true restarts and then
+        re-checks the real container state — report the returned
+        state_after/verified_running values, never assume the restart
+        worked."""
+        return await nas_service_restart(services, name, confirm)
+
     async def jellyseerr_search_tool(query: str) -> dict[str, Any]:
         """Search Jellyseerr directly for a movie or TV title. Unlike
         nasdoom_omni_search, this filters out anything flagged adult before
@@ -1026,6 +1057,9 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nasdoom_profiles", READ_ONLY, nasdoom_profiles_tool)
     register_tool(mcp, "jellyseerr_search", READ_ONLY, jellyseerr_search_tool)
     register_tool(mcp, "jellyseerr_request_add", WRITE, jellyseerr_request_add_tool)
+    register_tool(mcp, "nas_disk_health", READ_ONLY, nas_disk_health_tool)
+    register_tool(mcp, "nas_service_status", READ_ONLY, nas_service_status_tool)
+    register_tool(mcp, "nas_service_restart", WRITE, nas_service_restart_tool)
     register_tool(mcp, "escalate_to_worker", WRITE, escalate_to_worker_tool)
     return mcp
 
