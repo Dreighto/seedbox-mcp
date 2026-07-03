@@ -40,11 +40,32 @@ async def nasdoom_omni_search(services: Services, query: str) -> dict[str, Any]:
     return await safe_tool(run)
 
 
-async def nasdoom_requests_overview(services: Services, filter: str = "pending", take: int = 20) -> dict[str, Any]:
+async def nasdoom_requests_overview(services: Services, filter: str = "all", take: int = 20) -> dict[str, Any]:
+    """Friend-request state. The `counts` object is totals across EVERY state;
+    the `requests` LIST is only the subset matching `filter`. Default is "all"
+    so the list reflects what actually exists — filtering to "pending" returns
+    an empty list here because the bot's Jellyseerr key auto-approves
+    everything, so nothing ever sits pending. filter: all|pending|approved|
+    declined|processing|available."""
+
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
             return _unavailable()
-        return ToolResponse.success(await services.nasdoom.get("/v1/requests", {"filter": filter, "take": take}))
+        data = await services.nasdoom.get("/v1/requests", {"filter": filter, "take": take})
+        # Guard against the counts-say-13-but-list-is-empty confusion: if the
+        # filtered list is empty while totals show requests exist, say why
+        # rather than letting a caller read it as "no requests".
+        if isinstance(data, dict):
+            reqs = data.get("requests") or []
+            total = (data.get("counts") or {}).get("total") or 0
+            if not reqs and total:
+                data = {
+                    **data,
+                    "note": f"{total} request(s) exist in total, but none match filter={filter!r}. "
+                    "The counts are totals across all states; the list is only the filtered subset. "
+                    "Call with filter='all' to see them (pending is usually empty — requests auto-approve).",
+                }
+        return ToolResponse.success(data)
 
     return await safe_tool(run)
 

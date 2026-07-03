@@ -854,12 +854,15 @@ def create_mcp(services: Services) -> FastMCP:
         library-wide sweeps, not single-title questions."""
         return await nasdoom_omni_search(services, query)
 
-    async def nasdoom_requests_overview_tool(filter: str = "pending", take: int = 20) -> dict[str, Any]:
+    async def nasdoom_requests_overview_tool(filter: str = "all", take: int = 20) -> dict[str, Any]:
         """NASDOOM's friend-request concierge view — who requested what and
         its human-readable state (needs_approval, awaiting_release,
-        downloading, available, etc). filter: all|pending|approved|declined
-        |processing|available. Prefer this over jellyseerr_overview for
-        anything request-shaped; it has friendlier state labels."""
+        downloading, available, etc). The `counts` are totals across ALL
+        states; the `requests` list is only the `filter` subset. Default
+        filter is 'all' — do NOT use 'pending' expecting to see requests, it's
+        always empty because requests auto-approve. filter: all|pending|
+        approved|declined|processing|available. Prefer this over
+        jellyseerr_overview for anything request-shaped."""
         return await nasdoom_requests_overview(services, filter, take)
 
     async def nasdoom_control_tool(nocache: bool = True) -> dict[str, Any]:
