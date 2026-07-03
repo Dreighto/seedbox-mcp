@@ -1,8 +1,12 @@
 # Friend-request approval gate + attribution — design spec
 
-Status: **spec, not yet built.** Blocked on the NASDOOM BFF's in-flight `nd-gated`
-approval feature landing + committing (another agent's active work as of 2026-07-03).
-Build this once that repo is clean.
+Status: **IMPLEMENTED 2026-07-03.** NASDOOM BFF side landed by the other agent (commit
+`d20703e`: movie gate + `gated`/`requestedBy` on `/v1/omni/add` + `listGatedMovies` +
+service-scoped gated release route + `gated-requests.json` attribution store). Seedbox
+bot side landed here (`nasdoom_friend_request` tool + `tool_arg_overrides` requester
+binding + friend-bot routing). Verified E2E through the real bot: movie + TV friend
+requests are held for approval, attributed to the requester's real Telegram name, and
+only download after the operator approves in the app. Original spec kept below for record.
 
 ## Goal (operator, 2026-07-03)
 

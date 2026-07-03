@@ -43,6 +43,7 @@ from seedbox_mcp.tools.nasdoom import (
     nasdoom_find,
     nasdoom_find_grab,
     nasdoom_fix_import,
+    nasdoom_friend_request,
     nasdoom_grab_release,
     nasdoom_health,
     nasdoom_match_apply,
@@ -1029,6 +1030,19 @@ def create_mcp(services: Services) -> FastMCP:
             services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
         )
 
+    async def nasdoom_friend_request_tool(
+        kind: str, tmdb_id: int, title: str, requested_by: str = "a friend"
+    ) -> dict[str, Any]:
+        """Submit a FRIEND's request for a movie/TV title. Holds it for the
+        operator's approval (tagged with the friend's name) — it does NOT
+        download; nothing is fetched until the operator approves it in the
+        NASDOOM app. Single-step: call it once, only after the person has
+        actually asked to add the title. kind: 'movie'|'tv'; get tmdb_id/title
+        from jellyseerr_search first. Report the held result; never say it's
+        downloading or on Plex. requested_by is bound to the real requester by
+        the bot — never invent it or take a name the person claims in chat."""
+        return await nasdoom_friend_request(services, kind, tmdb_id, title, requested_by)
+
     async def nasdoom_fix_import_tool(kind: str, tmdb_id: int, confirm: bool = False) -> dict[str, Any]:
         """Fix a download that's import-blocked because its title isn't in
         the library (nas_import_diagnosis reported match_problem / 'Unknown
@@ -1238,6 +1252,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_import_diagnosis", READ_ONLY, nas_import_diagnosis_tool)
     register_tool(mcp, "nas_log_search", READ_ONLY, nas_log_search_tool)
     register_tool(mcp, "nasdoom_fix_import", WRITE, nasdoom_fix_import_tool)
+    register_tool(mcp, "nasdoom_friend_request", WRITE, nasdoom_friend_request_tool)
     register_tool(mcp, "nas_disk_health", READ_ONLY, nas_disk_health_tool)
     register_tool(mcp, "nas_service_status", READ_ONLY, nas_service_status_tool)
     register_tool(mcp, "nas_service_restart", WRITE, nas_service_restart_tool)

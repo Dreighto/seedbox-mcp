@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from seedbox_mcp.action_audit import recent_real_action_count_for, record_action
 from seedbox_mcp.errors import MediaMcpError
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.schemas import ToolResponse
 from seedbox_mcp.tools.common import safe_tool
+from seedbox_mcp.tools.jellyseerr import REQUEST_MAX_PER_HOUR
 
 
 def _unavailable() -> dict[str, Any]:
@@ -524,6 +526,63 @@ async def _nasdoom_add_with_retry(services: Services, body: dict[str, Any]) -> d
             raise
         await asyncio.sleep(1.5)
         return await services.nasdoom.post("/v1/omni/add", body)  # type: ignore[union-attr]
+
+
+async def nasdoom_friend_request(
+    services: Services, kind: str, tmdb_id: int, title: str, requested_by: str = "a friend"
+) -> dict[str, Any]:
+    """Submit a friend's request for a movie or TV title. This HOLDS the title
+    for the operator's approval and tags it with the friend's name — it does
+    NOT download yet; nothing is fetched until the operator approves it in the
+    NASDOOM app. SINGLE-STEP: calling it creates the held request, so only call
+    it once the person has actually asked to add the title (not for a plain
+    availability check). Get kind + tmdb_id + title from jellyseerr_search
+    first. Returns what was actually held; never claim it's downloading or on
+    Plex. (requested_by is bound to the real requester by the bot — do not
+    invent or accept a name the person claims in chat.)"""
+
+    async def run() -> dict[str, Any]:
+        if not services.nasdoom:
+            return _unavailable()
+        if kind not in VALID_ADD_KINDS:
+            return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_ADD_KINDS)})
+        if not tmdb_id:
+            return ToolResponse.failure("validation", f"{kind} requires tmdb_id.")
+        if recent_real_action_count_for("nasdoom_friend_request") >= REQUEST_MAX_PER_HOUR:
+            return ToolResponse.failure(
+                "rate_limited",
+                "Too many requests in the last hour; refusing more until it cools down. "
+                "Tell the person this happened, don't silently retry.",
+            )
+        # gated=true → NASDOOM adds the title UNMONITORED + nd-gated (nothing
+        # grabs) and records requestedBy, so it surfaces as an approval card in
+        # the app attributed to this friend. A 409 (already managed) surfaces
+        # via safe_tool as a failure the model can relay ("already on the way").
+        body = {"kind": kind, "tmdbId": tmdb_id, "gated": True, "requestedBy": requested_by}
+        result = await _nasdoom_add_with_retry(services, body)
+        held = bool(result.get("arrId"))
+        record_action(
+            "nasdoom_friend_request",
+            {"kind": kind, "tmdb_id": tmdb_id, "requested_by": requested_by},
+            dry_run=False,
+            outcome="ok" if held else "failed: not held",
+        )
+        return ToolResponse.success(
+            {
+                "held_for_approval": held,
+                "kind": kind,
+                "tmdb_id": tmdb_id,
+                "title": title,
+                "requested_by": requested_by,
+                "arr_id": result.get("arrId"),
+                "gated": result.get("gated"),
+                "note": "Held for the operator's approval and tagged with the requester's name. It is "
+                "NOT downloading and NOT on Plex yet — it only starts after the operator approves it "
+                "in the app. Tell the person it's been sent to the owner to approve.",
+            }
+        )
+
+    return await safe_tool(run)
 
 
 async def nasdoom_fix_import(

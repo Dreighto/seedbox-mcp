@@ -47,16 +47,14 @@ FRIEND_READ_ONLY_TOOLS: set[str] = {
     "content_release_status",
     "nasdoom_releases",
 }
-FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add", "nasdoom_grab_release"}
+FRIEND_ACTION_TOOLS: set[str] = {"nasdoom_friend_request", "nasdoom_grab_release"}
 
 # The subset of the action tools that keep the two-step preview→confirm gate.
-# jellyseerr_request_add is deliberately NOT here: it's single-step now (the
-# tool itself creates the request on one call), because the two-step gate was
-# the failure surface where the model previewed a request and then claimed it
-# was sent without ever confirming. A normal media request is low-stakes and
-# reversible, and the "did the person actually ask for it" check is
-# conversational, not a tool gate. nasdoom_grab_release stays gated — it
-# knowingly grabs a below-standard copy and warrants the explicit second step.
+# nasdoom_friend_request is deliberately NOT here: it's single-step (one call
+# holds the request for the operator's approval — nothing downloads, so it's
+# low-stakes), and the two-step tool gate was the exact surface where the model
+# previewed then falsely claimed it had submitted. nasdoom_grab_release stays
+# gated — it knowingly grabs a below-standard copy and warrants the second step.
 FRIEND_CONFIRM_TOOLS: set[str] = {"nasdoom_grab_release"}
 
 # HARD GUARD. This bot is exposed to people outside the network, so its tool
@@ -72,7 +70,7 @@ _FRIEND_SAFE_ALLOWLIST: frozenset[str] = frozenset(
         "web_search",
         "content_release_status",
         "nasdoom_releases",
-        "jellyseerr_request_add",
+        "nasdoom_friend_request",
         "nasdoom_grab_release",
     }
 )
@@ -91,6 +89,9 @@ _FRIEND_FORBIDDEN: frozenset[str] = frozenset(
         "nasdoom_queue_command",
         "nasdoom_queue_item_command",
         "nasdoom_add",
+        # auto-approves + downloads immediately, bypassing the operator's
+        # approval gate — friend requests MUST go through nasdoom_friend_request
+        "jellyseerr_request_add",
         "nasdoom_find_grab",
         "nasdoom_match_apply",
         "nasdoom_share_friend_create",
@@ -160,7 +161,8 @@ anything under the hood.
 
 What you can do, and nothing beyond it:
 1. Check if something is already on Plex, or find a title (jellyseerr_search).
-2. Request something to be added (jellyseerr_request_add).
+2. Request something to be added (nasdoom_friend_request) — this sends it to \
+the owner to approve; it does not download until they say yes.
 3. Check what quality is actually available for a title right now \
 (nasdoom_releases) and, only with the person's explicit okay, grab a \
 specific copy (nasdoom_grab_release).
@@ -230,17 +232,18 @@ just tell them to watch it; if it's "downloading", \
 already handled, tell them that (in the honest wording above) instead of \
 making a duplicate request. Only actually request when it's \
 "not_in_library" or "not_available". \
-jellyseerr_request_add is SINGLE-STEP: calling it creates the request right \
+nasdoom_friend_request is SINGLE-STEP: calling it submits the request right \
 then — there is no preview and no confirm step, so call it exactly once, \
 and ONLY when the person has actually asked to add the title (they said \
 "get it", "add it", "yes please", etc.). If they only asked whether \
 something exists or is on Plex, do NOT request it — answer the question and \
-offer to add it. The tool returns the real request id and state: report \
-what it returns. NEVER say a request was made, sent, or is "on its way" \
-unless the jellyseerr_request_add call actually ran this turn and came back \
-with a request id — saying so before or without that call is a false claim. \
-Works the same for a movie and a TV series (a series requests all seasons \
-automatically); you do not route anything to the owner yourself.
+offer to add it. IMPORTANT: a request does NOT download anything yet — it is \
+sent to the owner to approve, and only starts once they say yes. So tell the \
+person it's been sent to the owner to approve and you'll let them know, never \
+that it's "downloading" or "on its way" or "on Plex". NEVER say a request was \
+made unless the nasdoom_friend_request call actually ran this turn and came \
+back held — saying so before or without that call is a false claim. Works the \
+same for a movie and a TV series.
 
 Quality honesty (this matters — it prevents complaints later): the normal \
 request only grabs a proper copy at the server's standard quality \
@@ -275,16 +278,17 @@ Hey! I help you find stuff for the Plex server. Here's what I can do, in \
 plain terms:
 
 - Tell you if a movie, show, or anime is already on Plex.
-- Request something new to be added. Just ask, like "can you get Dune" or \
-"do you have The Bear".
+- Request something new. Just ask, like "can you get Dune" or "do you have \
+The Bear". Heads up: requests go to the owner to approve first, so it is not \
+instant; I'll let you know once it's approved and on the way.
 - Check if a new movie, or a new season or batch of an anime, is actually \
 out yet or streaming yet.
 - Grab something that just came out. Heads up: if a movie only just hit \
 theaters, sometimes the only copy available is a rough camera recording, \
 not real streaming quality. I'll always tell you first and let you decide.
 
-Movies and TV shows both get added when you ask; a show grabs all its \
-seasons. Anything else (account help, playback issues) you'll want to \
+Movies and TV shows both work the same way. Anything else (account help, \
+playback issues) you'll want to \
 message the owner directly. Just tell me what you're looking for.
 """
 
@@ -309,15 +313,20 @@ class FriendBotSettings(Settings):
 
 
 async def _handle_message(
-    settings: FriendBotSettings, token: str, chat_id: int, text: str, state: ChatState
+    settings: FriendBotSettings, token: str, chat_id: int, text: str, state: ChatState, requester_name: str = "a friend"
 ) -> ChatState:
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+    # Bind the requester's real Telegram name to every held request, so the
+    # operator's approval card shows who actually asked — set by the bot, not
+    # the model (which could be talked into a different name). The prompt line
+    # is only so the model refers to them naturally; the tool arg is authoritative.
+    system_prompt = f"{SYSTEM_PROMPT}\n\nThe person you are helping is {requester_name}."
     try:
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             mcp_client=mcp_client,
             model=settings.ollama_friend_bot_model,
             allowed_tools=FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS,
@@ -327,6 +336,7 @@ async def _handle_message(
             known_entity_ids=state.get("known_entity_ids"),
             ollama_url=settings.ollama_url,
             max_tool_rounds=10,
+            tool_arg_overrides={"nasdoom_friend_request": {"requested_by": requester_name}},
         )
         logger.info("reply: %r", reply)
     except Exception:
@@ -402,8 +412,12 @@ async def run_bot() -> None:
                 if text.strip().split()[0].split("@")[0] in ("/help", "/start"):
                     await send_message(token, chat_id, HELP_TEXT)
                     continue
+                # The requester's real name from Telegram (trusted) — bound to
+                # their held requests for the operator's approval card.
+                frm = message.get("from") or {}
+                requester_name = str(frm.get("first_name") or frm.get("username") or "a friend").strip()[:80]
                 state = chat_states.get(chat_id, ChatState(history=[], pending_action=None, known_entity_ids={}))
-                chat_states[chat_id] = await _handle_message(settings, token, chat_id, text, state)
+                chat_states[chat_id] = await _handle_message(settings, token, chat_id, text, state, requester_name)
                 _save_chat_states(chat_states)
 
 

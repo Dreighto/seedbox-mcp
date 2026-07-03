@@ -332,6 +332,7 @@ async def run_agent_turn(
     ollama_url: str = DEFAULT_OLLAMA_URL,
     timeout_s: float = 120.0,
     max_tool_rounds: int = MAX_TOOL_ROUNDS,
+    tool_arg_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, list[int]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
@@ -452,6 +453,13 @@ async def run_agent_turn(
                         args = json.loads(args)
                     except json.JSONDecodeError:
                         args = {}
+                # Caller-bound argument overrides: values the BOT layer fixes for
+                # a tool (e.g. the requesting friend's real Telegram name for a
+                # gated request), applied over whatever the model supplied so an
+                # identity can't be spoofed through the model. Trusted source →
+                # model can't override it, only the caller can.
+                if tool_arg_overrides and isinstance(args, dict) and name in tool_arg_overrides:
+                    args = {**args, **tool_arg_overrides[name]}
                 logger.info("ollama_ai tool call: %s(%s)", name, args)
                 if allowed_tools is not None and name not in allowed_tools:
                     logger.error("ollama_ai BLOCKED disallowed tool call: %s(%s)", name, args)
