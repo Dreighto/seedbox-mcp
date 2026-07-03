@@ -17,7 +17,7 @@ from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
-from seedbox_mcp.tools.adguard import adguard_stats
+from seedbox_mcp.tools.adguard import adguard_protection, adguard_stats
 from seedbox_mcp.tools.downloads import (
     jellyseerr_overview,
     prowlarr_indexer_stats,
@@ -726,6 +726,19 @@ def create_mcp(services: Services) -> FastMCP:
         AdGuard blocking". Read-only."""
         return await adguard_stats(services)
 
+    async def adguard_protection_tool(
+        action: str, minutes: int | None = None, confirm: bool = False
+    ) -> dict[str, Any]:
+        """Pause or resume AdGuard network filtering for the WHOLE LAN.
+        action='pause' disables ad/tracker blocking for a bounded number of
+        minutes (default 10, max 60) and AdGuard auto-re-enables it on its own
+        timer, so it can't be left off by accident; action='resume' turns it
+        back on now. Two-step: confirm=false previews current state + what
+        changes, confirm=true applies. Report the returned
+        protection_enabled_now. Use for "turn off ad-blocking for a bit, a
+        site is broken" and to turn it back on."""
+        return await adguard_protection(services, action, minutes, confirm)
+
     async def fleet_health_tool() -> dict[str, Any]:
         """Whole-cluster health in one call: up/down for every cluster node
         (NAS, ROOM, apple-node, Jetson, ailogueos) AND every service,
@@ -1065,9 +1078,10 @@ def create_mcp(services: Services) -> FastMCP:
         return await nas_service_status(services, name)
 
     async def nas_service_restart_tool(name: str, confirm: bool = False) -> dict[str, Any]:
-        """Restart one media-stack container on the NAS. Only the
-        allowlisted media services can be restarted — shared infrastructure
-        (n8n, ollama, cloudflared) is refused; escalate those instead.
+        """Restart one container on the NAS: the media stack AND the
+        beyond-media services (AdGuard, Vaultwarden, Uptime Kuma, Gotify).
+        Shared infrastructure (n8n, ollama, cloudflared) is refused with
+        reason=shared_infrastructure; escalate those instead.
 
         Two-step: confirm=false (default) previews the current container
         state without doing anything. confirm=true restarts and then
@@ -1190,6 +1204,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "content_release_status", READ_ONLY, content_release_status_tool)
     register_tool(mcp, "fleet_health", READ_ONLY, fleet_health_tool)
     register_tool(mcp, "adguard_stats", READ_ONLY, adguard_stats_tool)
+    register_tool(mcp, "adguard_protection", WRITE, adguard_protection_tool)
     register_tool(mcp, "nas_resources", READ_ONLY, nas_resources_tool)
     register_tool(mcp, "gotify_alerts", READ_ONLY, gotify_alerts_tool)
     register_tool(mcp, "tdarr_status", READ_ONLY, tdarr_status_tool)

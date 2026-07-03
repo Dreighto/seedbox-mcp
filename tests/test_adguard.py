@@ -26,3 +26,14 @@ def test_summarize_zero_queries_no_divide_by_zero() -> None:
     s = summarize_stats({"num_dns_queries": 0, "num_blocked_filtering": 0}, STATUS)
     assert s["block_rate_pct"] == 0.0
     assert s["top_blocked_domains"] == []
+
+
+def test_clamp_pause_minutes_bounds() -> None:
+    from seedbox_mcp.tools.adguard import PAUSE_DEFAULT_MIN, PAUSE_MAX_MIN, clamp_pause_minutes
+
+    assert clamp_pause_minutes(None) == PAUSE_DEFAULT_MIN
+    assert clamp_pause_minutes(0) == 1  # floor
+    assert clamp_pause_minutes(-5) == 1
+    assert clamp_pause_minutes(15) == 15
+    assert clamp_pause_minutes(999) == PAUSE_MAX_MIN  # ceiling
+    assert clamp_pause_minutes("abc") == PAUSE_DEFAULT_MIN  # non-numeric → default

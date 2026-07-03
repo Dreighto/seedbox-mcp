@@ -141,6 +141,10 @@ ACTION_TOOLS: set[str] = {
     # post-restart state in code) — same "safety mechanism earns the spot"
     # logic as nasdoom_find_grab above.
     "nas_service_restart",
+    # adguard_protection disables LAN-wide filtering, but only ever for a
+    # bounded window that AdGuard auto-re-enables (the tool clamps to <=60min)
+    # — the timed self-heal is the safety mechanism that earns the spot.
+    "adguard_protection",
 }
 
 # Escalation — not itself an action against the NAS, just the "call for
@@ -158,7 +162,7 @@ ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
 # so the OPERATOR sees the current state before it runs — enforced here
 # by timestamp (preview created during the current run_agent_turn call →
 # confirm rejected), not by trusting the model to pause.
-CROSS_TURN_CONFIRM_TOOLS: set[str] = {"nas_service_restart"}
+CROSS_TURN_CONFIRM_TOOLS: set[str] = {"nas_service_restart", "adguard_protection"}
 
 # Entity-ID provenance gate — generalizes the same "don't trust the model's
 # own regeneration, verify against real state" principle behind

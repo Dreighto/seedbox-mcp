@@ -407,6 +407,7 @@ conversation unless asked to re-test.
             "restart", "container", "docker", "down", "unreachable", "crashed", "hung",
             "not responding", "offline", "service",
             "ad block", "adblock", "adguard", "ads", "dns", "blocking", "tracker", "filtering",
+            "pause blocking", "disable blocking", "turn off ad", "unblock", "whitelist site",
             "cpu", "memory", "ram", "load", "resource", "pressure", "hogging", "swap",
             "running hot", "sluggish", "maxed",
             "alert", "alerts", "notification", "went wrong", "flapping", "recently", "what happened",
@@ -455,6 +456,13 @@ on/off, DNS queries, how many blocked and the block rate, top blocked \
 domains, and busiest client devices. Use for "how's the ad-blocking", "is \
 AdGuard working", "what's getting blocked". Read-only; report the numbers \
 as returned.
+- adguard_protection — pause or resume network-wide ad/tracker filtering \
+(action='pause'|'resume'). A pause is always time-bounded (default 10 min, \
+max 60) and AUTO-RE-ENABLES on AdGuard's timer, so it can't be left off by \
+accident. Two-step like restart: confirm=false previews, confirm=true \
+applies in a LATER turn. This affects EVERY device on the LAN — say so, and \
+after applying report the returned protection_enabled_now. Use for "a site's \
+broken, turn off ad-blocking for a few minutes" and to turn it back on.
 - nas_resources — live CPU load, memory/swap, uptime, and top \
 CPU/memory-hogging processes on the NAS box. Pressure flags (high_load, \
 memory_pressure, heavy_swap) are computed in code; report them as returned \
@@ -470,8 +478,8 @@ processed files only). Use for "how's the transcoding", "is the GPU node up".
 """,
         "tools": {
             "nas_disk_health", "nas_service_status", "nas_service_restart",
-            "nas_log_search", "adguard_stats", "nas_resources", "gotify_alerts",
-            "tdarr_status",
+            "nas_log_search", "adguard_stats", "adguard_protection", "nas_resources",
+            "gotify_alerts", "tdarr_status",
         },
     },
     "stats": {

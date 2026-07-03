@@ -52,6 +52,17 @@ class AdGuardClient:
         data: Any = resp.json()
         return data if isinstance(data, dict) else {}
 
+    async def _post(self, client: httpx.AsyncClient, path: str, body: dict[str, Any]) -> None:
+        resp = await client.post(f"{self.url}{path}", auth=self.auth, json=body)
+        if resp.is_error:
+            raise UpstreamError(
+                "validation" if resp.status_code < 500 else "upstream_unreachable",
+                "AdGuard rejected the request."
+                if resp.status_code < 500
+                else "AdGuard error.",
+                {"status_code": resp.status_code, "path": path},
+            )
+
     async def stats_summary(self) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
@@ -64,3 +75,29 @@ class AdGuardClient:
                 {"reason": exc.__class__.__name__},
             ) from exc
         return summarize_stats(stats, status)
+
+    async def protection_state(self) -> dict[str, Any]:
+        """Just the on/off state — for previews and post-change verification."""
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                status = await self._get(client, "/control/status")
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+            raise UpstreamError(
+                "upstream_unreachable", "AdGuard is unreachable.", {"reason": exc.__class__.__name__}
+            ) from exc
+        return {"protection_enabled": status.get("protection_enabled"), "running": status.get("running")}
+
+    async def set_protection(self, enabled: bool, duration_ms: int = 0) -> None:
+        """Toggle network filtering. When disabling, `duration_ms` schedules an
+        automatic re-enable (AdGuard's own timer) so filtering can't be left
+        off indefinitely — the duration is ignored by AdGuard when enabling."""
+        body: dict[str, Any] = {"enabled": bool(enabled)}
+        if not enabled and duration_ms:
+            body["duration"] = int(duration_ms)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                await self._post(client, "/control/protection", body)
+        except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError) as exc:
+            raise UpstreamError(
+                "upstream_unreachable", "AdGuard is unreachable.", {"reason": exc.__class__.__name__}
+            ) from exc
