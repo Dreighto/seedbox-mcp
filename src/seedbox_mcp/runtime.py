@@ -6,6 +6,7 @@ from seedbox_mcp.clients.adguard import AdGuardClient
 from seedbox_mcp.clients.apple_ocr import AppleOcrClient
 from seedbox_mcp.clients.arr import ArrClient
 from seedbox_mcp.clients.dispatch import DispatchClient
+from seedbox_mcp.clients.gotify import GotifyClient
 from seedbox_mcp.clients.nasdoom import NasdoomClient
 from seedbox_mcp.clients.ollama_web import OllamaWebClient
 from seedbox_mcp.clients.perplexity import PerplexityClient
@@ -35,6 +36,7 @@ class Services:
     perplexity: PerplexityClient | None = None
     uptime_kuma: UptimeKumaClient | None = None
     adguard: AdGuardClient | None = None
+    gotify: GotifyClient | None = None
     apple_ocr: AppleOcrClient | None = None
 
 
@@ -82,6 +84,9 @@ def build_services(settings: Settings) -> Services:
             settings.adguard_username,
             settings.adguard_password.get_secret_value(),
         )
+    gotify = None
+    if settings.gotify_client_token:
+        gotify = GotifyClient(settings.gotify_url, settings.gotify_client_token.get_secret_value())
     apple_ocr = None
     if settings.apple_ocr_enabled and settings.apple_ocr_base_url:
         apple_ocr = AppleOcrClient(settings.apple_ocr_base_url)
@@ -100,5 +105,6 @@ def build_services(settings: Settings) -> Services:
         perplexity=perplexity,
         uptime_kuma=uptime_kuma,
         adguard=adguard,
+        gotify=gotify,
         apple_ocr=apple_ocr,
     )

@@ -26,6 +26,7 @@ from seedbox_mcp.tools.downloads import (
 )
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
 from seedbox_mcp.tools.fleet import fleet_health
+from seedbox_mcp.tools.gotify import gotify_alerts
 from seedbox_mcp.tools.host_health import (
     nas_disk_health,
     nas_log_search,
@@ -689,6 +690,15 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def gotify_alerts_tool(limit: int = 10) -> dict[str, Any]:
+        """Recent alert HISTORY from the Gotify inbox: what has actually fired
+        lately (Uptime Kuma node/service up/down events, and anything else
+        pushed there). USE THIS for "what alerts fired recently", "what went
+        wrong today", "has anything been flapping" — the temporal view that
+        fleet_health (a right-now snapshot) doesn't give. `limit` = how many
+        most-recent alerts. Read-only."""
+        return await gotify_alerts(services, limit)
+
     async def nas_resources_tool() -> dict[str, Any]:
         """Live NAS resource pressure: CPU load (1/5/15m + per-core), memory
         used/available, swap, uptime, and the top CPU/memory-consuming
@@ -1171,6 +1181,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "fleet_health", READ_ONLY, fleet_health_tool)
     register_tool(mcp, "adguard_stats", READ_ONLY, adguard_stats_tool)
     register_tool(mcp, "nas_resources", READ_ONLY, nas_resources_tool)
+    register_tool(mcp, "gotify_alerts", READ_ONLY, gotify_alerts_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)

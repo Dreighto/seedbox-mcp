@@ -381,6 +381,7 @@ conversation unless asked to re-test.
             "ad block", "adblock", "adguard", "ads", "dns", "blocking", "tracker", "filtering",
             "cpu", "memory", "ram", "load", "resource", "pressure", "hogging", "swap",
             "running hot", "sluggish", "maxed",
+            "alert", "alerts", "notification", "went wrong", "flapping", "recently", "what happened",
         ],
         "prompt": """\
 Host-level diagnostics for the NAS box itself:
@@ -425,10 +426,14 @@ CPU/memory-hogging processes on the NAS box. Pressure flags (high_load, \
 memory_pressure, heavy_swap) are computed in code; report them as returned \
 and don't call the box healthy on your own read if a flag is set. Use for \
 "is the NAS under load / low on memory / running hot / what's hogging it".
+- gotify_alerts — recent alert HISTORY (what has fired lately: node/service \
+up-down events and anything else pushed to Gotify). fleet_health/nas_* are \
+right-now; this is the timeline. Use for "what alerts fired recently", "what \
+went wrong today", "has anything been flapping".
 """,
         "tools": {
             "nas_disk_health", "nas_service_status", "nas_service_restart",
-            "nas_log_search", "adguard_stats", "nas_resources",
+            "nas_log_search", "adguard_stats", "nas_resources", "gotify_alerts",
         },
     },
     "stats": {

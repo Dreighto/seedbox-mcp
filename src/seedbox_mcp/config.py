@@ -136,6 +136,10 @@ class Settings(BaseSettings):
     adguard_username: str = "admin"
     adguard_password: SecretStr | None = None
 
+    # Gotify alert inbox — client token gates the gotify_alerts read tool.
+    gotify_url: str = "http://nas.taila28611.ts.net:8071"
+    gotify_client_token: SecretStr | None = None
+
     # SSH target for host-level NAS diagnostics (SMART disk health, Docker
     # service control) — the media stack's disks and containers live on the
     # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
@@ -179,6 +183,7 @@ class Settings(BaseSettings):
         "perplexity_api_key",
         "uptime_kuma_api_key",
         "adguard_password",
+        "gotify_client_token",
         mode="before",
     )
     @classmethod
