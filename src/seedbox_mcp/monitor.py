@@ -13,7 +13,7 @@ import httpx
 from fastmcp import Client
 
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, READ_ONLY_TOOLS, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.telegram import send_message
@@ -48,8 +48,27 @@ MONITOR_ACTION_TOOLS: set[str] = {
     "nasdoom_match_apply",
 }
 MONITOR_ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
-# web_search stays out per the same operator decision above.
-MONITOR_READ_ONLY_TOOLS: set[str] = READ_ONLY_TOOLS - {"web_search", "web_fetch"}
+
+# Context-bloat control: the monitor runs every 30 min and has a FIXED job
+# (the check list in SYSTEM_PROMPT), so it declares exactly the read tools it
+# needs rather than inheriting the whole READ_ONLY_TOOLS set. Inheriting the
+# global set carried ~48 tool schemas (~7k tokens) per cycle while using ~12 —
+# 73% waste, and it grew every time a new read tool landed anywhere in the
+# server (adguard_stats, nas_resources, etc. were all being dragged in). This
+# explicit list decouples the monitor from that growth: a new tool only
+# reaches the monitor if it's added HERE on purpose. Each entry is used by the
+# prompt's check list or feeds one of the action tools (match_search ->
+# match_apply, queue -> queue_item_command).
+MONITOR_READ_ONLY_TOOLS: set[str] = {
+    "fleet_health",
+    "nasdoom_health",
+    "nasdoom_queue",
+    "nasdoom_requests_overview",
+    "nasdoom_control",
+    "nas_backup_health",
+    "prowlarr_indexer_stats",
+    "nasdoom_match_search",
+}
 
 # The model outputs exactly this (nothing else) when a cycle finds nothing
 # worth surfacing — checked literally by main() to decide whether to push to

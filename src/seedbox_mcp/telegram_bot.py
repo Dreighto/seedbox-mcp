@@ -389,9 +389,11 @@ Host-level diagnostics for the NAS box itself:
 thresholds; report them and their reasons EXACTLY as returned. Never \
 soften a replace_now, never call a disk healthy on your own judgment, \
 and never state an attribute value the tool didn't return.
-- nas_service_status — the media-stack Docker containers' actual state. \
-nasdoom_health checks the services' APIs; this checks the containers. \
-When an API is down, check the container before assuming anything.
+- nas_service_status — ALL Docker containers on the NAS: the media stack \
+AND the newer services (monitoring/Uptime Kuma, Gotify, AdGuard, \
+Vaultwarden). nasdoom_health/fleet_health check services' reachability; \
+this checks the actual container state. When something's unreachable, check \
+its container before assuming anything. (Restart is still media-stack only.)
 - nas_service_restart — restart one media container. These host tools \
 are loaded whenever you can read this paragraph — never tell the \
 operator you're "not set up" for a restart or that a new message would \
