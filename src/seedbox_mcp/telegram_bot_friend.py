@@ -115,6 +115,26 @@ if _friend_tools & _FRIEND_FORBIDDEN:
 # different chat_ids, no reason to share state.
 HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_friend_history.json"
 
+# Chat_ids we've already handled the "not enrolled yet" path for, so a new
+# person is acknowledged + the operator pinged exactly ONCE — a repeat message
+# from the same un-enrolled person doesn't re-notify (and can't be used to spam
+# the operator).
+PENDING_SEEN_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_friend_pending.json"
+
+
+def _load_pending_seen() -> set[int]:
+    try:
+        return {int(x) for x in json.loads(PENDING_SEEN_PATH.read_text())}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def _save_pending_seen(seen: set[int]) -> None:
+    try:
+        PENDING_SEEN_PATH.write_text(json.dumps(sorted(seen)))
+    except OSError:
+        logger.exception("failed to persist pending-enrollment set to %s", PENDING_SEEN_PATH)
+
 
 class ChatState(dict[str, Any]):
     """Same shape as telegram_bot.py's ChatState — {"history": [...],
@@ -369,6 +389,7 @@ async def run_bot() -> None:
 
     await _set_bot_commands(token)
     chat_states = _load_chat_states()
+    pending_seen = _load_pending_seen()
     logger.info(
         "Friend bot polling started (model=%s, %d allowed chat_ids)",
         settings.ollama_friend_bot_model,
@@ -400,11 +421,37 @@ async def run_bot() -> None:
                 chat_id = chat.get("id")
                 text = message.get("text")
                 if chat_id not in allowed_chat_ids:
-                    # Not an error state — this is the bootstrap path for a
-                    # new friend: they message the bot, this logs their
-                    # chat_id, the operator adds it to
-                    # NASDOOM_HELPER_TELEGRAM_ALLOWED_CHAT_IDS and restarts.
+                    # Enrollment bootstrap: a new person messages the bot; the
+                    # operator adds their chat_id to
+                    # NASDOOM_HELPER_TELEGRAM_ALLOWED_CHAT_IDS and restarts. Don't
+                    # leave them (and the operator) in the dark: acknowledge the
+                    # person and ping the operator with their name + chat_id —
+                    # but only ONCE per chat_id, so a repeat/spam message can't
+                    # re-notify.
                     logger.info("message from unrecognized chat_id=%s (not yet allowlisted)", chat_id)
+                    if chat_id is not None and chat_id not in pending_seen:
+                        pending_seen.add(chat_id)
+                        _save_pending_seen(pending_seen)
+                        frm = message.get("from") or {}
+                        name = str(frm.get("first_name") or frm.get("username") or "Someone").strip()[:80]
+                        uname = frm.get("username")
+                        await send_message(
+                            token,
+                            chat_id,
+                            "Hi! I help with the Plex server, but you're not set up yet. "
+                            "I've let the owner know, so hang tight and they'll add you soon.",
+                        )
+                        op_token = settings.nas_ops_telegram_bot_token
+                        op_chat = settings.nas_ops_telegram_allowed_chat_id
+                        if op_token and op_chat:
+                            handle = f" (@{uname})" if uname else ""
+                            await send_message(
+                                op_token.get_secret_value(),
+                                op_chat,
+                                f"New person wants access to the Plex helper bot: {name}{handle}, "
+                                f"chat_id {chat_id}. To let them in, add {chat_id} to "
+                                "NASDOOM_HELPER_TELEGRAM_ALLOWED_CHAT_IDS and restart the friend bot.",
+                            )
                     continue
                 if not text:
                     continue
