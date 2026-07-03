@@ -18,6 +18,7 @@ from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.telegram import send_message
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
+from seedbox_mcp.tools.host_health import RESTARTABLE_SERVICES
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -68,7 +69,24 @@ MONITOR_READ_ONLY_TOOLS: set[str] = {
     "nas_backup_health",
     "prowlarr_indexer_stats",
     "nasdoom_match_search",
+    # so the LLM can see a container's actual state when deciding whether a
+    # persistent (already-restarted) outage needs escalation.
+    "nas_service_status",
 }
+
+# Tools the monitor can use WITHOUT an LLM in the loop, via deterministic
+# pre-checks (queue resume, service recovery). Restarts stay code-driven —
+# never LLM discretion (same rationale as _deterministic_queue_resume) — but
+# they ARE autonomous now, so the graduation gate counts them as such.
+# nas_service_restart GRADUATED here 2026-07-02 after clearing the gate:
+# 7 recent clean restarts across 5 distinct services, 0 failures.
+MONITOR_DETERMINISTIC_TOOLS: set[str] = {"nasdoom_queue_command", "nas_service_restart"}
+
+# Don't re-restart the same service within this window: if a restart didn't
+# make it stick, restarting again every cycle is a loop, not a fix — leave it
+# down and let the LLM escalate instead.
+RESTART_COOLDOWN_S = 2 * 3600
+MONITOR_RESTART_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_restart_state.json"
 
 # The model outputs exactly this (nothing else) when a cycle finds nothing
 # worth surfacing — checked literally by main() to decide whether to push to
@@ -218,6 +236,80 @@ async def _deterministic_queue_resume(mcp_client: Client[Any]) -> str | None:
     return "Deterministic check: the download queue was paused — resumed it automatically."
 
 
+def _load_restart_state() -> dict[str, float]:
+    try:
+        raw = json.loads(MONITOR_RESTART_STATE_PATH.read_text())
+        return {str(k): float(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, ValueError, TypeError):
+        return {}
+
+
+def _save_restart_state(state: dict[str, float]) -> None:
+    try:
+        MONITOR_RESTART_STATE_PATH.write_text(json.dumps(state))
+    except OSError:
+        logger.exception("failed to persist restart state to %s", MONITOR_RESTART_STATE_PATH)
+
+
+def _extract(result: Any) -> dict[str, Any]:
+    try:
+        return dict(json.loads("\n".join(b.text for b in result.content if hasattr(b, "text"))))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
+async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float) -> str | None:
+    """Restart a down media-stack container directly (no LLM), once per
+    RESTART_COOLDOWN_S. GRADUATED autonomous action, kept deterministic for
+    the same reason as the queue resume: "container is stopped -> restart it"
+    needs no judgment, and leaving it to the LLM reintroduces the silent-skip
+    failure mode. The per-service cooldown is the loop guard — if a restart
+    didn't make it stick, we don't keep hammering it every cycle; we leave it
+    down and flag it so the LLM cycle escalates instead."""
+    if rate_limit_exceeded():
+        return None
+    async with mcp_client:
+        status = await mcp_client.call_tool("nas_service_status", {})
+    services = (_extract(status).get("data") or {}).get("services") or []
+    down = [
+        s
+        for s in services
+        if s.get("name") in RESTARTABLE_SERVICES and s.get("state") not in ("running", "restarting")
+    ]
+    if not down:
+        return None
+    state = _load_restart_state()
+    notes: list[str] = []
+    for svc in down:
+        name = svc["name"]
+        if now_ts - state.get(name, 0.0) < RESTART_COOLDOWN_S:
+            mins = int((now_ts - state.get(name, 0.0)) / 60)
+            notes.append(
+                f"{name} is still down after a restart {mins} min ago — not restarting again "
+                "(loop guard); this needs escalation."
+            )
+            continue
+        args = {"name": name, "confirm": True}
+        async with mcp_client:
+            r = await mcp_client.call_tool("nas_service_restart", args)
+        rd = _extract(r)
+        verified = (rd.get("data") or {}).get("verified_running")
+        ok = bool(rd.get("ok")) and verified is not False
+        record_action(
+            "nas_service_restart", args, dry_run=False,
+            outcome="ok" if ok else f"failed: verified_running={verified}",
+        )
+        state[name] = now_ts
+        logger.info("monitor: deterministically restarted %s (verified=%s)", name, verified)
+        notes.append(
+            f"{name} container was down — restarted it, verified back up."
+            if ok
+            else f"{name} container was down — restart did NOT bring it back; needs escalation."
+        )
+    _save_restart_state(state)
+    return "\n".join(notes) if notes else None
+
+
 async def run_monitor_cycle(model: str | None = None) -> str | None:
     """Returns the alert text, or None if the cycle found nothing worth
     surfacing (the sentinel case) — None is the expected, common outcome."""
@@ -237,6 +329,13 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     except Exception:
         logger.exception("download strike check failed (non-fatal)")
 
+    # Auto-restart a down media container (deterministic, cooldown-guarded).
+    recovery_note = None
+    try:
+        recovery_note = await _deterministic_service_recovery(mcp_client, time.time())
+    except Exception:
+        logger.exception("service recovery check failed (non-fatal)")
+
     # Spelled out as an explicit checklist in the TASK message, not just
     # buried in the system prompt — live testing found the model skip
     # nasdoom_queue entirely in a cycle where it was the one tool with an
@@ -250,9 +349,12 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats, "
         "nas_disk_health. Disk verdicts (ok/watch/replace_now) are computed in code; a watch or "
         "replace_now verdict is ALWAYS report-worthy, quoted with its exact reasons. "
-        "Note: the queue's paused state AND any stalled downloads have already been checked and "
-        "auto-corrected before you started, by separate deterministic steps — don't try to fix "
-        "those yourself, just report the queue's current state like any other check."
+        "Note: the queue's paused state, any stalled downloads, AND any down media-stack "
+        "container have already been checked and auto-corrected before you started, by separate "
+        "deterministic steps — don't try to fix those yourself, just report current state. One "
+        "thing that IS yours: if a service shows down/unhealthy and the recovery note says it was "
+        "already restarted and didn't come back (loop guard tripped), that's a persistent failure "
+        "— escalate_to_worker with what you see."
     )
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
         task,
@@ -275,7 +377,7 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     # Deterministic-fix notes always surface (they describe real actions
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
-    parts = [p for p in (queue_fix_note, strike_note, llm_alert) if p]
+    parts = [p for p in (queue_fix_note, strike_note, recovery_note, llm_alert) if p]
     return "\n\n".join(parts) if parts else None
 
 

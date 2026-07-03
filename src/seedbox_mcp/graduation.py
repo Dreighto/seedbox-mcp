@@ -19,34 +19,62 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-# Real successful executions (zero real failures) a fix tool must accumulate
-# before it's a graduation candidate. Deliberately conservative — a couple of
-# lucky runs is not "fixed things properly." Bump per-tool judgement, not this
-# global, if a specific tool warrants a higher bar.
+# Thresholds a fix tool must clear before it's a graduation candidate. These
+# are deliberately strict — "graduated to unattended autonomy" is a real trust
+# jump, and a handful of lucky identical runs is not "fixed things properly":
+# - MIN_SUCCESSES: total clean real executions.
+# - MIN_DISTINCT: those successes must span at least this many DISTINCT
+#   scenarios (e.g. restarting 5 different services, not tautulli 5x) — proof
+#   it handles variety, not one memorised case.
+# - RECENCY_DAYS: proof expires; a tool that worked months ago but hasn't been
+#   exercised since has to re-earn it, so stale success can't carry a tool that
+#   may have since regressed.
+# ANY real failure in-window still forces "review" regardless of successes.
 GRADUATION_MIN_SUCCESSES = 5
+GRADUATION_MIN_DISTINCT = 2
+GRADUATION_RECENCY_DAYS = 30.0
 
 
 @dataclass
 class ToolReadiness:
     tool: str
-    real_success: int
-    real_fail: int
+    real_success: int  # all-time clean real executions
+    recent_success: int  # clean real executions within the recency window
+    distinct_scenarios: int  # distinct arg-signatures among recent successes
+    real_fail: int  # real executions that returned a failure/error (in-window)
     blocked: int  # times a safety gate (entity/confirm) stopped the call — the guard working
     dry_run: int
     autonomous: bool
     verdict: str  # autonomous | ready | proving | review | unproven
 
 
-def _verdict(real_success: int, real_fail: int, autonomous: bool, threshold: int) -> str:
+def _is_failure(outcome: str) -> bool:
+    return outcome.startswith("error") or outcome.startswith("failed")
+
+
+def _scenario_key(args: Any) -> str:
+    """Stable signature of WHAT an action targeted, ignoring the confirm/
+    dry_run flags — so distinct-scenario counting reflects distinct targets."""
+    if not isinstance(args, dict):
+        return json.dumps(args, sort_keys=True, default=str)
+    trimmed = {k: v for k, v in args.items() if k not in ("confirm", "dry_run")}
+    return json.dumps(trimmed, sort_keys=True, default=str)
+
+
+def _verdict(
+    recent_success: int, distinct: int, real_fail: int, autonomous: bool, threshold: int, min_distinct: int
+) -> str:
     if autonomous:
         return "autonomous"
     if real_fail > 0:
         # Any real failure means "inspect before trusting it unattended" —
         # don't silently graduate something that has errored in the field.
         return "review"
-    if real_success >= threshold:
+    if recent_success >= threshold and distinct >= min_distinct:
         return "ready"
-    if real_success > 0:
+    if recent_success > 0:
+        # Has clean successes but not yet enough, or not across enough
+        # distinct scenarios — still earning it.
         return "proving"
     return "unproven"
 
@@ -55,29 +83,40 @@ def analyze_readiness(
     rows: list[dict[str, Any]],
     action_tools: set[str],
     monitor_tools: set[str],
+    now_ts: float,
     threshold: int = GRADUATION_MIN_SUCCESSES,
+    min_distinct: int = GRADUATION_MIN_DISTINCT,
+    recency_days: float = GRADUATION_RECENCY_DAYS,
 ) -> list[ToolReadiness]:
     """Pure. Per interactive action tool, tally its audited outcomes and
     classify graduation readiness. `rows` are parsed .action_audit.jsonl
-    entries; `monitor_tools` is the current autonomous set."""
+    entries; `monitor_tools` is the current autonomous set. `now_ts` anchors
+    the recency window (pass time.time())."""
+    cutoff = now_ts - recency_days * 86400
     out: list[ToolReadiness] = []
     for tool in sorted(action_tools | monitor_tools):
         entries = [r for r in rows if r.get("tool") == tool]
         real = [r for r in entries if not r.get("dry_run")]
-        dry = [r for r in entries if r.get("dry_run")]
         real_success = sum(1 for r in real if str(r.get("outcome")) == "ok")
-        real_fail = sum(1 for r in real if str(r.get("outcome", "")).startswith("error"))
+        in_window = [r for r in real if isinstance(r.get("ts"), int | float) and r["ts"] >= cutoff]
+        recent_success_rows = [r for r in in_window if str(r.get("outcome")) == "ok"]
+        distinct = len({_scenario_key(r.get("args")) for r in recent_success_rows})
+        real_fail = sum(1 for r in in_window if _is_failure(str(r.get("outcome", ""))))
         blocked = sum(1 for r in entries if str(r.get("outcome", "")).startswith("blocked"))
         autonomous = tool in monitor_tools
         out.append(
             ToolReadiness(
                 tool=tool,
                 real_success=real_success,
+                recent_success=len(recent_success_rows),
+                distinct_scenarios=distinct,
                 real_fail=real_fail,
                 blocked=blocked,
-                dry_run=len(dry),
+                dry_run=sum(1 for r in entries if r.get("dry_run")),
                 autonomous=autonomous,
-                verdict=_verdict(real_success, real_fail, autonomous, threshold),
+                verdict=_verdict(
+                    len(recent_success_rows), distinct, real_fail, autonomous, threshold, min_distinct
+                ),
             )
         )
     return out
@@ -110,18 +149,21 @@ def format_report(readiness: list[ToolReadiness], threshold: int = GRADUATION_MI
     lines.append("")
 
     def row(r: ToolReadiness) -> str:
-        return f"  {r.tool:30s} ok={r.real_success} fail={r.real_fail} blocked={r.blocked}"
+        return (
+            f"  {r.tool:30s} recent_ok={r.recent_success} distinct={r.distinct_scenarios} "
+            f"fail={r.real_fail} (all-time ok={r.real_success})"
+        )
 
     if groups["ready"]:
-        lines.append("READY TO GRADUATE (proven, zero failures, not yet autonomous):")
+        lines.append(f"READY TO GRADUATE (>={threshold} recent clean, >=2 distinct, 0 fails):")
         lines += [row(r) for r in groups["ready"]]
         lines.append("")
     if groups["review"]:
-        lines.append("NEEDS REVIEW (has real failures — inspect before graduating):")
+        lines.append("NEEDS REVIEW (has real failures in-window — inspect before graduating):")
         lines += [row(r) for r in groups["review"]]
         lines.append("")
     if groups["proving"]:
-        lines.append(f"PROVING (some real successes, below {threshold}):")
+        lines.append(f"PROVING (recent clean successes, below {threshold} or too few distinct):")
         lines += [row(r) for r in groups["proving"]]
         lines.append("")
     if groups["autonomous"]:
@@ -145,8 +187,9 @@ def build_nudge(readiness: list[ToolReadiness]) -> str | None:
     lines = ["*Monitor autonomy*"]
     for r in ready:
         lines.append(
-            f"{r.tool} has proven itself ({r.real_success} clean fixes, 0 failures). "
-            "Consider graduating it to the unattended monitor."
+            f"{r.tool} has proven itself ({r.recent_success} recent clean fixes across "
+            f"{r.distinct_scenarios} scenarios, 0 failures). Consider graduating it to the "
+            "unattended monitor."
         )
     for r in review:
         n = r.real_fail
@@ -159,21 +202,27 @@ def build_nudge(readiness: list[ToolReadiness]) -> str | None:
 
 def graduation_nudge() -> str | None:
     """Load the real audit + tool sets and build the digest nudge, or None."""
+    import time
+
     from seedbox_mcp.action_audit import AUDIT_LOG_PATH
     from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS
-    from seedbox_mcp.monitor import MONITOR_ACTION_TOOLS
+    from seedbox_mcp.monitor import MONITOR_ACTION_TOOLS, MONITOR_DETERMINISTIC_TOOLS
 
     rows = load_audit_rows(AUDIT_LOG_PATH)
-    return build_nudge(analyze_readiness(rows, ACTION_TOOLS, MONITOR_ACTION_TOOLS))
+    autonomous = MONITOR_ACTION_TOOLS | MONITOR_DETERMINISTIC_TOOLS
+    return build_nudge(analyze_readiness(rows, ACTION_TOOLS, autonomous, time.time()))
 
 
 def main() -> None:
+    import time
+
     from seedbox_mcp.action_audit import AUDIT_LOG_PATH
     from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS
-    from seedbox_mcp.monitor import MONITOR_ACTION_TOOLS
+    from seedbox_mcp.monitor import MONITOR_ACTION_TOOLS, MONITOR_DETERMINISTIC_TOOLS
 
     rows = load_audit_rows(AUDIT_LOG_PATH)
-    readiness = analyze_readiness(rows, ACTION_TOOLS, MONITOR_ACTION_TOOLS)
+    autonomous = MONITOR_ACTION_TOOLS | MONITOR_DETERMINISTIC_TOOLS
+    readiness = analyze_readiness(rows, ACTION_TOOLS, autonomous, time.time())
     print(format_report(readiness))
 
 

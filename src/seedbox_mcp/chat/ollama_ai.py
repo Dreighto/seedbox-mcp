@@ -583,7 +583,19 @@ async def run_agent_turn(
                     with contextlib.suppress(json.JSONDecodeError):
                         _scan_for_entity_ids(json.loads(tool_text), known_entity_ids)
                     if is_real_action:
-                        record_action(name, args, dry_run=False, outcome="ok")
+                        # Record the ACTUAL result, not just "the call didn't
+                        # raise". A tool can return ToolResponse.failure
+                        # (ok=false, e.g. not_permitted or a restart that came
+                        # back verified_running=false) without raising — logging
+                        # that as "ok" would let a tool bank fake successes and
+                        # graduate to autonomy on proof it never earned.
+                        outcome = "ok"
+                        with contextlib.suppress(json.JSONDecodeError):
+                            parsed = json.loads(tool_text)
+                            if isinstance(parsed, dict) and parsed.get("ok") is False:
+                                reason = parsed.get("error_type") or parsed.get("message") or "ok=false"
+                                outcome = f"failed: {reason}"
+                        record_action(name, args, dry_run=False, outcome=outcome)
                     elif is_action_tool:
                         # A successful confirm=false preview — this becomes
                         # the one thing a subsequent confirm=true is allowed
