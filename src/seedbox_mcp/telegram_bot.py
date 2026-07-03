@@ -42,6 +42,34 @@ DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
 # unreliability here.
 PHOTO_IDENTIFY_MODEL = "qwen3-coder:480b-cloud"
 PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
+
+# Investigation/diagnosis is inherently multi-step — check status, pull logs,
+# correlate across tools, then act — which is exactly where the fast
+# interactive model (gpt-oss:20b) is unreliable: it tends to stop halfway or
+# skip a confirming step (the same weakness that put the monitor and photo-id
+# paths on the bigger model). So when the operator's message signals they want
+# something diagnosed or worked through rather than a quick status read,
+# escalate to the bigger model with a higher tool-round ceiling so it can
+# actually chain the steps. A simple read ("is everything up", "how's the
+# ad-blocking") stays on the fast model — only diagnostic/fix INTENT trips
+# this. False positives just cost a slower/pricier reply, not a wrong one.
+INVESTIGATE_MODEL = "qwen3-coder:480b-cloud"
+INVESTIGATE_MAX_TOOL_ROUNDS = 12
+_INVESTIGATE_KEYWORDS = (
+    "why", "investigate", "diagnose", "troubleshoot", "debug", "root cause",
+    "figure out", "look into", "what's causing", "whats causing", "what's wrong",
+    "whats wrong", "went wrong", "what happened", "broken", "not working",
+    "isn't working", "isnt working", "not importing", "won't import", "wont import",
+    "won't finish", "wont finish", "keeps failing", "keep failing", "keeps happening",
+    "stuck", "look into it", "get to the bottom",
+)
+
+
+def _is_investigation(text: str) -> bool:
+    lowered = text.lower()
+    return any(kw in lowered for kw in _INVESTIGATE_KEYWORDS)
+
+
 POLL_TIMEOUT_S = 30
 
 # Conversation history, persisted to disk — this service gets restarted
@@ -592,6 +620,18 @@ async def _handle_message(
         active_sections |= force_sections
     active_sections = _select_sections(text, active_sections)
     system_prompt, allowed_tools = _build_context(active_sections)
+
+    # Escalate to the bigger model for diagnostic/fix intent (unless a caller
+    # already pinned a model, e.g. the photo path). Multi-step investigation
+    # needs the reliability + the extra tool rounds.
+    chosen_model = model
+    chosen_rounds = max_tool_rounds
+    if chosen_model is None and _is_investigation(text):
+        chosen_model = INVESTIGATE_MODEL
+        if chosen_rounds is None:
+            chosen_rounds = INVESTIGATE_MAX_TOOL_ROUNDS
+        logger.info("investigation intent detected -> escalating to %s", INVESTIGATE_MODEL)
+
     logger.info("active sections: %s (%d tools)", sorted(active_sections) or ["core-only"], len(allowed_tools))
 
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
@@ -599,13 +639,13 @@ async def _handle_message(
         await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
     try:
         run_kwargs: dict[str, Any] = {}
-        if max_tool_rounds is not None:
-            run_kwargs["max_tool_rounds"] = max_tool_rounds
+        if chosen_rounds is not None:
+            run_kwargs["max_tool_rounds"] = chosen_rounds
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
             system_prompt=system_prompt,
             mcp_client=mcp_client,
-            model=model or settings.ollama_bot_model,
+            model=chosen_model or settings.ollama_bot_model,
             allowed_tools=allowed_tools & (READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS),
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
