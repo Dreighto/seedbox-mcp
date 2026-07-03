@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import shlex
 from typing import Any
 
 from seedbox_mcp.runtime import Services
@@ -13,6 +14,33 @@ from seedbox_mcp.tools.common import safe_tool
 logger = logging.getLogger("seedbox_mcp.tools.host_health")
 
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5"]
+
+# Emitted on the NAS to collect live resource pressure as one JSON line —
+# reads /proc directly (no external deps) plus ps for the top consumers. Uses
+# only double quotes so shlex.quote can single-quote it whole for SSH.
+_RES_SCRIPT = (
+    "import json,os,subprocess\n"
+    "def rf(p):\n return open(p).read()\n"
+    "la=rf(\"/proc/loadavg\").split()[:3]\n"
+    "mem={}\n"
+    "for line in rf(\"/proc/meminfo\").splitlines():\n"
+    " k,_,v=line.partition(\":\")\n"
+    " mem[k]=int(v.split()[0]) if v.split() else 0\n"
+    "up=float(rf(\"/proc/uptime\").split()[0])\n"
+    "def top(s):\n"
+    " o=subprocess.run([\"ps\",\"-eo\",\"pcpu,pmem,comm\",\"--no-headers\",\"--sort=-\"+s],"
+    "capture_output=True,text=True).stdout\n"
+    " r=[]\n"
+    " for l in o.splitlines()[:3]:\n"
+    "  p=l.split(None,2)\n"
+    "  if len(p)==3: r.append({\"cpu\":float(p[0]),\"mem\":float(p[1]),\"cmd\":p[2]})\n"
+    " return r\n"
+    "print(json.dumps({\"cores\":os.cpu_count(),\"load\":[float(x) for x in la],"
+    "\"mem_total_mb\":mem.get(\"MemTotal\",0)//1024,\"mem_available_mb\":mem.get(\"MemAvailable\",0)//1024,"
+    "\"swap_total_mb\":mem.get(\"SwapTotal\",0)//1024,\"swap_free_mb\":mem.get(\"SwapFree\",0)//1024,"
+    "\"uptime_s\":up,\"top_cpu\":top(\"pcpu\"),\"top_mem\":top(\"pmem\")}))"
+)
+_RES_CMD = "python3 -c " + shlex.quote(_RES_SCRIPT)
 
 # Hard allowlist of restartable containers on the NAS — media stack only.
 # n8n, ollama, and cloudflared deliberately excluded: they're shared
@@ -276,5 +304,64 @@ async def nas_log_search(services: Services, service: str, query: str, lines: in
                 "the event predates the current logs.",
             }
         )
+
+    return await safe_tool(run)
+
+
+def _summarize_resources(raw: dict[str, Any]) -> dict[str, Any]:
+    """Pure. Fold raw /proc + ps data into a resource-pressure rollup with
+    deterministic flags (computed here, not left to the model)."""
+    cores = raw.get("cores") or 1
+    load = raw.get("load") or [0.0, 0.0, 0.0]
+    mem_total = raw.get("mem_total_mb", 0)
+    mem_avail = raw.get("mem_available_mb", 0)
+    mem_used = mem_total - mem_avail
+    swap_total = raw.get("swap_total_mb", 0)
+    swap_used = swap_total - raw.get("swap_free_mb", 0)
+    load_per_core = round(load[0] / cores, 2) if cores else load[0]
+    mem_used_pct = round(100 * mem_used / mem_total, 1) if mem_total else 0.0
+    flags: list[str] = []
+    if load_per_core >= 2.0:
+        flags.append("high_load")
+    if mem_total and mem_avail / mem_total < 0.08:
+        flags.append("memory_pressure")
+    if swap_total and swap_used / swap_total > 0.5:
+        flags.append("heavy_swap")
+    return {
+        "cores": cores,
+        "load_1m": load[0],
+        "load_5m": load[1],
+        "load_15m": load[2],
+        "load_per_core": load_per_core,
+        "mem_total_mb": mem_total,
+        "mem_used_mb": mem_used,
+        "mem_available_mb": mem_avail,
+        "mem_used_pct": mem_used_pct,
+        "swap_used_mb": swap_used,
+        "uptime_hours": round((raw.get("uptime_s") or 0) / 3600, 1),
+        "top_cpu": raw.get("top_cpu", []),
+        "top_mem": raw.get("top_mem", []),
+        "pressure": flags or ["none"],
+        "healthy": not flags,
+    }
+
+
+async def nas_resources(services: Services) -> dict[str, Any]:
+    """Live resource pressure on the NAS box: CPU load (1/5/15m + per-core),
+    memory used/available, swap, uptime, and the top CPU/memory-consuming
+    processes. Deterministic pressure flags (high_load, memory_pressure,
+    heavy_swap) are computed in code. Use to answer "is the NAS under load /
+    low on memory / what's hogging it" — the live-pressure view that disk
+    SMART and free-space checks don't give. Read-only."""
+
+    async def run() -> dict[str, Any]:
+        rc, out, err = await _run_on_nas(services, _RES_CMD)
+        if rc != 0:
+            return ToolResponse.failure("host_unreachable", err.strip() or "SSH to NAS failed.")
+        try:
+            raw = json.loads(out.strip().splitlines()[-1])
+        except (json.JSONDecodeError, IndexError):
+            return ToolResponse.failure("parse_error", f"Unexpected output: {out[:200]}")
+        return ToolResponse.success(_summarize_resources(raw))
 
     return await safe_tool(run)

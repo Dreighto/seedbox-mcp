@@ -379,6 +379,8 @@ conversation unless asked to re-test.
             "restart", "container", "docker", "down", "unreachable", "crashed", "hung",
             "not responding", "offline", "service",
             "ad block", "adblock", "adguard", "ads", "dns", "blocking", "tracker", "filtering",
+            "cpu", "memory", "ram", "load", "resource", "pressure", "hogging", "swap",
+            "running hot", "sluggish", "maxed",
         ],
         "prompt": """\
 Host-level diagnostics for the NAS box itself:
@@ -416,10 +418,15 @@ on/off, DNS queries, how many blocked and the block rate, top blocked \
 domains, and busiest client devices. Use for "how's the ad-blocking", "is \
 AdGuard working", "what's getting blocked". Read-only; report the numbers \
 as returned.
+- nas_resources — live CPU load, memory/swap, uptime, and top \
+CPU/memory-hogging processes on the NAS box. Pressure flags (high_load, \
+memory_pressure, heavy_swap) are computed in code; report them as returned \
+and don't call the box healthy on your own read if a flag is set. Use for \
+"is the NAS under load / low on memory / running hot / what's hogging it".
 """,
         "tools": {
             "nas_disk_health", "nas_service_status", "nas_service_restart",
-            "nas_log_search", "adguard_stats",
+            "nas_log_search", "adguard_stats", "nas_resources",
         },
     },
     "stats": {

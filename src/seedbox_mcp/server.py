@@ -29,6 +29,7 @@ from seedbox_mcp.tools.fleet import fleet_health
 from seedbox_mcp.tools.host_health import (
     nas_disk_health,
     nas_log_search,
+    nas_resources,
     nas_service_restart,
     nas_service_status,
 )
@@ -688,6 +689,15 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def nas_resources_tool() -> dict[str, Any]:
+        """Live NAS resource pressure: CPU load (1/5/15m + per-core), memory
+        used/available, swap, uptime, and the top CPU/memory-consuming
+        processes, with deterministic pressure flags (high_load,
+        memory_pressure, heavy_swap). USE THIS for "is the NAS under load / low
+        on memory / running hot / what's hogging it" — the live view that disk
+        SMART and free-space checks don't cover. Read-only."""
+        return await nas_resources(services)
+
     async def adguard_stats_tool() -> dict[str, Any]:
         """Ad/tracker-blocking health from AdGuard Home: protection on/off,
         total DNS queries, how many blocked and the block rate, average
@@ -1160,6 +1170,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "content_release_status", READ_ONLY, content_release_status_tool)
     register_tool(mcp, "fleet_health", READ_ONLY, fleet_health_tool)
     register_tool(mcp, "adguard_stats", READ_ONLY, adguard_stats_tool)
+    register_tool(mcp, "nas_resources", READ_ONLY, nas_resources_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)

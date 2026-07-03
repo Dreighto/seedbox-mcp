@@ -84,6 +84,7 @@ READ_ONLY_TOOLS: set[str] = {
     "nasdoom_releases",
     "nas_disk_health",
     "nas_service_status",
+    "nas_resources",
     "nas_import_diagnosis",
     "nas_log_search",
 }
