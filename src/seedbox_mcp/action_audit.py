@@ -62,5 +62,29 @@ def recent_real_action_count(window_s: float = 3600.0) -> int:
     return count
 
 
+def recent_real_action_count_for(tool: str, window_s: float = 3600.0) -> int:
+    """Same rolling-hour count, but for ONE tool only. Lets a specific tool
+    enforce its own budget independent of the shared system-action breaker —
+    e.g. friend media requests, which are the friend bot's primary function
+    and shouldn't share the low system-action cap meant for restarts."""
+    if not AUDIT_LOG_PATH.exists():
+        return 0
+    cutoff = time.time() - window_s
+    count = 0
+    try:
+        with AUDIT_LOG_PATH.open() as f:
+            for line in f:
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("tool") == tool and not entry.get("dry_run") and entry.get("ts", 0) >= cutoff:
+                    count += 1
+    except OSError:
+        logger.exception("failed to read action audit log for per-tool rate-limit check")
+        return 0
+    return count
+
+
 def rate_limit_exceeded() -> bool:
     return recent_real_action_count() >= MAX_ACTIONS_PER_HOUR

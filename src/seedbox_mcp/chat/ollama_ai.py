@@ -133,7 +133,11 @@ ACTION_TOOLS: set[str] = {
     "sonarr_queue_action",
     "radarr_blocklist_remove",
     "sonarr_blocklist_remove",
-    "jellyseerr_request_add",
+    # jellyseerr_request_add is intentionally NOT here: it's single-step now
+    # (the tool creates the request on one call and self-audits + self-rate-
+    # limits), so it must not be treated as a two-step preview→confirm action
+    # by any consumer. The two-step gate was the exact surface where the friend
+    # bot previewed a request and then claimed it was sent without confirming.
     "nasdoom_grab_release",
     "nasdoom_fix_import",
     # nas_service_restart is a real service interruption but bounded (the

@@ -3,10 +3,17 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import quote
 
+from seedbox_mcp.action_audit import recent_real_action_count_for, record_action
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.schemas import ToolResponse
-from seedbox_mcp.telegram import send_message
 from seedbox_mcp.tools.common import safe_tool
+
+# Media requests are the friend bot's primary function, so they get their own
+# generous rolling-hour cap instead of sharing the low system-action breaker
+# (which is a runaway backstop for restarts etc.). Still a real ceiling so a
+# confused or abusive requester can't fire hundreds, but high enough that
+# normal use — a household of friends adding a watchlist — never hits it.
+REQUEST_MAX_PER_HOUR = 60
 
 
 def _unavailable() -> dict[str, Any]:
@@ -112,65 +119,72 @@ async def jellyseerr_search(services: Services, query: str) -> dict[str, Any]:
     return await safe_tool(run)
 
 
-async def _notify_operator(services: Services, kind: str, tmdb_id: int, title: str, year: int | None) -> None:
-    token = services.settings.nas_ops_telegram_bot_token
-    chat_id = services.settings.nas_ops_telegram_allowed_chat_id
-    if not token or not chat_id:
-        return
-    label = "TV series" if kind == "tv" else "movie (part of a multi-title request)"
-    year_part = f" ({year})" if year else ""
-    await send_message(
-        token.get_secret_value(),
-        chat_id,
-        f'A friend request needs your review: {label} "{title}"{year_part} (tmdb {tmdb_id}). '
-        "Add it yourself if you want it.",
-    )
-
-
 async def jellyseerr_request_add(
     services: Services,
     kind: str,
     tmdb_id: int,
     title: str,
     year: int | None = None,
-    bulk: bool = False,
-    confirm: bool = False,
 ) -> dict[str, Any]:
-    """A single movie is added automatically — the operator's own stated
-    tolerance is that movies are fine to add on their own. A TV series, or
-    a movie the caller has flagged bulk=true (several titles requested in
-    one message), is NOT sent to Jellyseerr. The API key here is the
-    operator's own admin account, which auto-approves everything it
-    creates, so there's no native pending-for-review state to rely on for
-    those cases — the operator gets a direct Telegram notification and
-    adds it themselves if they want it."""
+    """Request a movie or TV series through Jellyseerr. SINGLE-STEP: calling
+    this actually creates the request — there is no preview/confirm dance,
+    so only call it once the person has clearly asked for the title to be
+    added (not for a plain "is it on Plex" lookup). A TV series needs all
+    seasons requested (Jellyseerr requires the seasons field, or the request
+    is empty); this passes seasons="all". Get kind + tmdb_id + title from
+    jellyseerr_search first — the id must come from a real search here, not
+    memory. Returns the real Jellyseerr request id and the resulting state so
+    the reply is grounded in what actually happened, never a claim before the
+    call ran."""
 
     async def run() -> dict[str, Any]:
         if not services.jellyseerr:
             return _unavailable()
         if kind not in VALID_KINDS:
             return ToolResponse.failure("validation", "Unsupported kind.", {"allowed": sorted(VALID_KINDS)})
-        needs_operator_review = kind == "tv" or bulk
-        if not confirm:
-            return ToolResponse.success(
-                {
-                    "dry_run": True,
-                    "would_request": {"kind": kind, "tmdb_id": tmdb_id, "title": title, "year": year},
-                    "routing": "operator_review" if needs_operator_review else "auto_add",
-                }
+        # Dedicated request breaker (not the shared system-action cap): a real
+        # write exposed to outside users still gets a rolling-hour ceiling, but
+        # a generous one sized for legitimate request volume.
+        if recent_real_action_count_for("jellyseerr_request_add") >= REQUEST_MAX_PER_HOUR:
+            return ToolResponse.failure(
+                "rate_limited",
+                "Too many requests in the last hour; refusing more until it cools down. "
+                "Tell the person this happened, don't silently retry.",
             )
-        if needs_operator_review:
-            await _notify_operator(services, kind, tmdb_id, title, year)
-            return ToolResponse.success(
-                {
-                    "dry_run": False,
-                    "routed_to": "operator_review",
-                    "note": "Sent to the operator to review and add themselves, not added automatically.",
-                }
-            )
-        result = await services.jellyseerr.post("/api/v1/request", {"mediaType": kind, "mediaId": tmdb_id})
+        # TV requires the seasons field or Jellyseerr creates an empty request
+        # that downloads nothing; "all" is what a friend asking for "the show"
+        # means. Movies take no seasons field.
+        body: dict[str, Any] = {"mediaType": kind, "mediaId": tmdb_id}
+        if kind == "tv":
+            body["seasons"] = "all"
+        result = await services.jellyseerr.post("/api/v1/request", body)
+        req_id = result.get("id")
+        media = result.get("media") or {}
+        # Jellyseerr request status: 1=pending approval, 2=approved. The media
+        # status (5=available, 3=processing/downloading, ...) says where the
+        # underlying download is. Report what actually happened, plainly.
+        req_status = result.get("status")
+        state = "pending_approval" if req_status == 1 else "approved"
+        record_action(
+            "jellyseerr_request_add",
+            {"kind": kind, "tmdb_id": tmdb_id},
+            dry_run=False,
+            outcome="ok" if req_id else "failed: no request id returned",
+        )
         return ToolResponse.success(
-            {"dry_run": False, "routed_to": "auto_added", "jellyseerr_request_id": result.get("id")}
+            {
+                "requested": bool(req_id),
+                "kind": kind,
+                "tmdb_id": tmdb_id,
+                "title": title,
+                "year": year,
+                "jellyseerr_request_id": req_id,
+                "state": state,
+                "media_status": media.get("status"),
+                "note": "Request created. state=approved means it's already being fetched; "
+                "state=pending_approval means it's waiting on the owner. Do not tell the person "
+                "it's on Plex — it isn't watchable until it finishes downloading.",
+            }
         )
 
     return await safe_tool(run)

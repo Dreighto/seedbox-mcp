@@ -1128,22 +1128,18 @@ def create_mcp(services: Services) -> FastMCP:
         title: str,
         year: int | None = None,
         bulk: bool = False,
-        confirm: bool = False,
+        confirm: bool = True,
     ) -> dict[str, Any]:
         """Request a movie or TV series through Jellyseerr. kind: 'movie'|
         'tv'. Get tmdb_id/title/year from jellyseerr_search first.
 
-        A single movie request is added and downloaded automatically. A TV
-        series is always routed to the operator to add themselves — set
-        bulk=true if the person is asking for several titles in one
-        message (even movies), which also routes to the operator instead
-        of auto-adding all of them. When in doubt about whether something
-        counts as bulk, set bulk=true.
-
-        Two-step: confirm=false (default) previews where this would route
-        (auto_add vs operator_review) without doing anything. confirm=true
-        executes."""
-        return await jellyseerr_request_add(services, kind, tmdb_id, title, year, bulk, confirm)
+        SINGLE-STEP: this creates the request the moment you call it (a TV
+        series requests all seasons). There is NO preview/confirm step — only
+        call it once the person has actually asked to add the title, not for a
+        plain availability check. It returns the real request id and state;
+        report that, never a success before the call ran. (The bulk/confirm
+        arguments are accepted for backward compatibility and ignored.)"""
+        return await jellyseerr_request_add(services, kind, tmdb_id, title, year)
 
     async def nasdoom_profiles_tool(kind: str) -> dict[str, Any]:
         """List available quality profiles for 'movie' or 'tv', plus the

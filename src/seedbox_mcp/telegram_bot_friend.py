@@ -49,6 +49,16 @@ FRIEND_READ_ONLY_TOOLS: set[str] = {
 }
 FRIEND_ACTION_TOOLS: set[str] = {"jellyseerr_request_add", "nasdoom_grab_release"}
 
+# The subset of the action tools that keep the two-step preview→confirm gate.
+# jellyseerr_request_add is deliberately NOT here: it's single-step now (the
+# tool itself creates the request on one call), because the two-step gate was
+# the failure surface where the model previewed a request and then claimed it
+# was sent without ever confirming. A normal media request is low-stakes and
+# reversible, and the "did the person actually ask for it" check is
+# conversational, not a tool gate. nasdoom_grab_release stays gated — it
+# knowingly grabs a below-standard copy and warrants the explicit second step.
+FRIEND_CONFIRM_TOOLS: set[str] = {"nasdoom_grab_release"}
+
 # HARD GUARD. This bot is exposed to people outside the network, so its tool
 # set must NEVER drift to include anything system-affecting. The full set is
 # asserted (at import) to be a subset of this explicit safe allowlist — so
@@ -219,17 +229,18 @@ just tell them to watch it; if it's "downloading", \
 "approved_waiting_for_release", or "requested_pending_approval" it's \
 already handled, tell them that (in the honest wording above) instead of \
 making a duplicate request. Only actually request when it's \
-"not_in_library" or "not_available". Call \
-jellyseerr_request_add with confirm=false to see how it routes (a single \
-movie adds automatically at the server's normal quality; a TV series, or \
-several titles at once, goes to the owner to approve). Set bulk=true if \
-they asked for more than one title in one message. The confirm=false call \
-is only a preview — nothing has happened yet. If their message already \
-says yes (they asked you to get it, said "please", "yes", etc.), call \
-jellyseerr_request_add AGAIN with confirm=true in the same turn, then tell \
-them what actually happened. Never say a request was sent or the owner was \
-notified unless the confirm=true call actually ran. If they only asked to \
-look something up, don't request it — ask first.
+"not_in_library" or "not_available". \
+jellyseerr_request_add is SINGLE-STEP: calling it creates the request right \
+then — there is no preview and no confirm step, so call it exactly once, \
+and ONLY when the person has actually asked to add the title (they said \
+"get it", "add it", "yes please", etc.). If they only asked whether \
+something exists or is on Plex, do NOT request it — answer the question and \
+offer to add it. The tool returns the real request id and state: report \
+what it returns. NEVER say a request was made, sent, or is "on its way" \
+unless the jellyseerr_request_add call actually ran this turn and came back \
+with a request id — saying so before or without that call is a false claim. \
+Works the same for a movie and a TV series (a series requests all seasons \
+automatically); you do not route anything to the owner yourself.
 
 Quality honesty (this matters — it prevents complaints later): the normal \
 request only grabs a proper copy at the server's standard quality \
@@ -272,9 +283,9 @@ out yet or streaming yet.
 theaters, sometimes the only copy available is a rough camera recording, \
 not real streaming quality. I'll always tell you first and let you decide.
 
-If it's a TV series or a few things at once, I pass it to the owner to \
-approve, that's normal. Anything else (account help, playback issues) you'll \
-want to message the owner directly. Just tell me what you're looking for.
+Movies and TV shows both get added when you ask; a show grabs all its \
+seasons. Anything else (account help, playback issues) you'll want to \
+message the owner directly. Just tell me what you're looking for.
 """
 
 
@@ -310,7 +321,7 @@ async def _handle_message(
             mcp_client=mcp_client,
             model=settings.ollama_friend_bot_model,
             allowed_tools=FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS,
-            action_tools=FRIEND_ACTION_TOOLS,
+            action_tools=FRIEND_CONFIRM_TOOLS,
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
             known_entity_ids=state.get("known_entity_ids"),
