@@ -61,6 +61,7 @@ READ_ONLY_TOOLS: set[str] = {
     "jellyseerr_overview",
     "nasdoom_health",
     "fleet_health",
+    "adguard_stats",
     "nasdoom_queue",
     "nasdoom_omni_search",
     "nasdoom_requests_overview",

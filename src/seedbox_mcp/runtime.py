@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from seedbox_mcp.clients.adguard import AdGuardClient
 from seedbox_mcp.clients.apple_ocr import AppleOcrClient
 from seedbox_mcp.clients.arr import ArrClient
 from seedbox_mcp.clients.dispatch import DispatchClient
@@ -33,6 +34,7 @@ class Services:
     ollama_web: OllamaWebClient | None = None
     perplexity: PerplexityClient | None = None
     uptime_kuma: UptimeKumaClient | None = None
+    adguard: AdGuardClient | None = None
     apple_ocr: AppleOcrClient | None = None
 
 
@@ -73,6 +75,13 @@ def build_services(settings: Settings) -> Services:
         uptime_kuma = UptimeKumaClient(
             settings.uptime_kuma_url, settings.uptime_kuma_api_key.get_secret_value()
         )
+    adguard = None
+    if settings.adguard_password:
+        adguard = AdGuardClient(
+            settings.adguard_url,
+            settings.adguard_username,
+            settings.adguard_password.get_secret_value(),
+        )
     apple_ocr = None
     if settings.apple_ocr_enabled and settings.apple_ocr_base_url:
         apple_ocr = AppleOcrClient(settings.apple_ocr_base_url)
@@ -90,5 +99,6 @@ def build_services(settings: Settings) -> Services:
         ollama_web=ollama_web,
         perplexity=perplexity,
         uptime_kuma=uptime_kuma,
+        adguard=adguard,
         apple_ocr=apple_ocr,
     )

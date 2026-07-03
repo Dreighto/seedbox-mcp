@@ -378,6 +378,7 @@ conversation unless asked to re-test.
             "disk", "drive", "smart", "nvme", "ssd", "hdd", "hard drive", "dying", "failing",
             "restart", "container", "docker", "down", "unreachable", "crashed", "hung",
             "not responding", "offline", "service",
+            "ad block", "adblock", "adguard", "ads", "dns", "blocking", "tracker", "filtering",
         ],
         "prompt": """\
 Host-level diagnostics for the NAS box itself:
@@ -410,8 +411,16 @@ A useful diagnostic chain when something's broken: nasdoom_health (API \
 reachable?) → nas_service_status (container running?) → \
 nas_service_restart if stopped/unhealthy → re-check nasdoom_health → \
 escalate_to_worker if still broken, saying exactly what you tried.
+- adguard_stats — network-wide ad/tracker blocking health: protection \
+on/off, DNS queries, how many blocked and the block rate, top blocked \
+domains, and busiest client devices. Use for "how's the ad-blocking", "is \
+AdGuard working", "what's getting blocked". Read-only; report the numbers \
+as returned.
 """,
-        "tools": {"nas_disk_health", "nas_service_status", "nas_service_restart", "nas_log_search"},
+        "tools": {
+            "nas_disk_health", "nas_service_status", "nas_service_restart",
+            "nas_log_search", "adguard_stats",
+        },
     },
     "stats": {
         "keywords": [

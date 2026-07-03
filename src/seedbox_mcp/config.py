@@ -130,6 +130,12 @@ class Settings(BaseSettings):
     uptime_kuma_url: str = "http://nas.taila28611.ts.net:3001"
     uptime_kuma_api_key: SecretStr | None = None
 
+    # AdGuard Home network ad/tracker blocking. Password (basic auth) gates
+    # the adguard_stats read tool.
+    adguard_url: str = "http://nas.taila28611.ts.net:8083"
+    adguard_username: str = "admin"
+    adguard_password: SecretStr | None = None
+
     # SSH target for host-level NAS diagnostics (SMART disk health, Docker
     # service control) — the media stack's disks and containers live on the
     # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
@@ -172,6 +178,7 @@ class Settings(BaseSettings):
         "ollama_web_search_api_key",
         "perplexity_api_key",
         "uptime_kuma_api_key",
+        "adguard_password",
         mode="before",
     )
     @classmethod

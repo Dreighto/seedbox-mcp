@@ -17,6 +17,7 @@ from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
+from seedbox_mcp.tools.adguard import adguard_stats
 from seedbox_mcp.tools.downloads import (
     jellyseerr_overview,
     prowlarr_indexer_stats,
@@ -687,6 +688,14 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def adguard_stats_tool() -> dict[str, Any]:
+        """Ad/tracker-blocking health from AdGuard Home: protection on/off,
+        total DNS queries, how many blocked and the block rate, average
+        processing time, top blocked domains, and busiest client devices. USE
+        THIS for "how's the ad-blocking / network filtering doing" or "is
+        AdGuard blocking". Read-only."""
+        return await adguard_stats(services)
+
     async def fleet_health_tool() -> dict[str, Any]:
         """Whole-cluster health in one call: up/down for every cluster node
         (NAS, ROOM, apple-node, Jetson, ailogueos) AND every service,
@@ -1150,6 +1159,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "web_search", READ_ONLY, web_search_tool)
     register_tool(mcp, "content_release_status", READ_ONLY, content_release_status_tool)
     register_tool(mcp, "fleet_health", READ_ONLY, fleet_health_tool)
+    register_tool(mcp, "adguard_stats", READ_ONLY, adguard_stats_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)
