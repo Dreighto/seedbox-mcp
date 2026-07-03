@@ -93,6 +93,7 @@ from seedbox_mcp.tools.tautulli import (
     tautulli_user_stats,
     tautulli_users,
 )
+from seedbox_mcp.tools.tdarr import tdarr_status
 from seedbox_mcp.tools.web_search import content_release_status, web_fetch, web_search
 
 logger = logging.getLogger("seedbox_mcp")
@@ -690,6 +691,15 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def tdarr_status_tool() -> dict[str, Any]:
+        """HEVC transcoding pipeline status from Tdarr: each node (NAS internal
+        + the ROOM RTX 5060 Ti GPU node) with paused/worker state, whether
+        anything is actively processing, lifetime transcode/health-check
+        counts, and space reclaimed (Tdarr-processed files only). USE THIS for
+        "how's the transcoding", "is the GPU node up", "how much has Tdarr
+        saved". Read-only."""
+        return await tdarr_status(services)
+
     async def gotify_alerts_tool(limit: int = 10) -> dict[str, Any]:
         """Recent alert HISTORY from the Gotify inbox: what has actually fired
         lately (Uptime Kuma node/service up/down events, and anything else
@@ -1182,6 +1192,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "adguard_stats", READ_ONLY, adguard_stats_tool)
     register_tool(mcp, "nas_resources", READ_ONLY, nas_resources_tool)
     register_tool(mcp, "gotify_alerts", READ_ONLY, gotify_alerts_tool)
+    register_tool(mcp, "tdarr_status", READ_ONLY, tdarr_status_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)

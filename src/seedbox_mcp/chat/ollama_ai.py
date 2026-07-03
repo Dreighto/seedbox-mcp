@@ -63,6 +63,7 @@ READ_ONLY_TOOLS: set[str] = {
     "fleet_health",
     "adguard_stats",
     "gotify_alerts",
+    "tdarr_status",
     "nasdoom_queue",
     "nasdoom_omni_search",
     "nasdoom_requests_overview",

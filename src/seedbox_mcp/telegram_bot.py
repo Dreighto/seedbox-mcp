@@ -410,6 +410,8 @@ conversation unless asked to re-test.
             "cpu", "memory", "ram", "load", "resource", "pressure", "hogging", "swap",
             "running hot", "sluggish", "maxed",
             "alert", "alerts", "notification", "went wrong", "flapping", "recently", "what happened",
+            "transcod", "tdarr", "re-encode", "reencode", "hevc", "space saved", "space reclaimed",
+            "shrink", "gpu", "gpu node", "5060",
         ],
         "prompt": """\
 Host-level diagnostics for the NAS box itself:
@@ -458,10 +460,14 @@ and don't call the box healthy on your own read if a flag is set. Use for \
 up-down events and anything else pushed to Gotify). fleet_health/nas_* are \
 right-now; this is the timeline. Use for "what alerts fired recently", "what \
 went wrong today", "has anything been flapping".
+- tdarr_status — HEVC transcoding pipeline: node state (incl. the ROOM 5060 \
+Ti GPU node), whether anything's processing, and space reclaimed (Tdarr-\
+processed files only). Use for "how's the transcoding", "is the GPU node up".
 """,
         "tools": {
             "nas_disk_health", "nas_service_status", "nas_service_restart",
             "nas_log_search", "adguard_stats", "nas_resources", "gotify_alerts",
+            "tdarr_status",
         },
     },
     "stats": {

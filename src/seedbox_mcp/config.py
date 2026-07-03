@@ -140,6 +140,10 @@ class Settings(BaseSettings):
     gotify_url: str = "http://nas.taila28611.ts.net:8071"
     gotify_client_token: SecretStr | None = None
 
+    # Tdarr HEVC transcoding server (no auth by default). URL presence gates
+    # the tdarr_status read tool.
+    tdarr_url: str | None = "http://nas.taila28611.ts.net:8265"
+
     # SSH target for host-level NAS diagnostics (SMART disk health, Docker
     # service control) — the media stack's disks and containers live on the
     # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
