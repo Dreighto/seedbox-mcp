@@ -107,6 +107,14 @@ class DigestSettings(Settings):
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
 
 
+# fix_import is deliberately withheld from the scheduled digest: it mutates
+# the library (adds a series/movie, triggers an import) and stays
+# operator-driven (operator's call 2026-07-02). Enforced by omission, not by
+# a prompt line the model could ignore — the digest reports a stuck import
+# for the operator to fix interactively, it can't run the fix itself.
+DIGEST_ACTION_TOOLS = ACTION_TOOLS - {"nasdoom_fix_import"}
+
+
 async def run_digest(task: str, model: str | None = None) -> str:
     settings = DigestSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
@@ -117,7 +125,8 @@ async def run_digest(task: str, model: str | None = None) -> str:
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
-        allowed_tools=READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS,
+        allowed_tools=READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS | ESCALATION_TOOLS,
+        action_tools=DIGEST_ACTION_TOOLS,
         ollama_url=settings.ollama_url,
     )
     return text
@@ -128,7 +137,11 @@ DEFAULT_TASK = (
     "for every node and service), staleness_report (movies+tv, "
     "older_than_days=120, include_missing=true), nasdoom_health, "
     "nasdoom_queue, nasdoom_requests_overview, nasdoom_control, "
-    "nas_backup_health, and nas_storage_inventory. Summarize."
+    "nas_backup_health, nas_storage_inventory, and nas_import_diagnosis. If "
+    "nas_import_diagnosis shows any downloads stuck on import, REPORT them by "
+    "name so the operator can fix them (say they can ask you to fix a stuck "
+    "import) — do NOT run nasdoom_fix_import yourself; it stays operator-"
+    "driven. Summarize."
 )
 
 
