@@ -11,6 +11,7 @@ from seedbox_mcp.clients.perplexity import PerplexityClient
 from seedbox_mcp.clients.plex import PlexClient
 from seedbox_mcp.clients.sabnzbd import SabnzbdClient
 from seedbox_mcp.clients.tautulli import TautulliClient
+from seedbox_mcp.clients.uptime_kuma import UptimeKumaClient
 from seedbox_mcp.config import Settings
 
 
@@ -31,6 +32,7 @@ class Services:
     dispatch: DispatchClient | None = None
     ollama_web: OllamaWebClient | None = None
     perplexity: PerplexityClient | None = None
+    uptime_kuma: UptimeKumaClient | None = None
     apple_ocr: AppleOcrClient | None = None
 
 
@@ -66,6 +68,11 @@ def build_services(settings: Settings) -> Services:
     perplexity = None
     if settings.perplexity_api_key:
         perplexity = PerplexityClient(settings.perplexity_api_key.get_secret_value())
+    uptime_kuma = None
+    if settings.uptime_kuma_api_key:
+        uptime_kuma = UptimeKumaClient(
+            settings.uptime_kuma_url, settings.uptime_kuma_api_key.get_secret_value()
+        )
     apple_ocr = None
     if settings.apple_ocr_enabled and settings.apple_ocr_base_url:
         apple_ocr = AppleOcrClient(settings.apple_ocr_base_url)
@@ -82,5 +89,6 @@ def build_services(settings: Settings) -> Services:
         dispatch=dispatch,
         ollama_web=ollama_web,
         perplexity=perplexity,
+        uptime_kuma=uptime_kuma,
         apple_ocr=apple_ocr,
     )

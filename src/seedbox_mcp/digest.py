@@ -124,7 +124,8 @@ async def run_digest(task: str, model: str | None = None) -> str:
 
 
 DEFAULT_TASK = (
-    "Run the routine NAS health check: staleness_report (movies+tv, "
+    "Run the routine NAS health check: fleet_health (whole-cluster up/down "
+    "for every node and service), staleness_report (movies+tv, "
     "older_than_days=120, include_missing=true), nasdoom_health, "
     "nasdoom_queue, nasdoom_requests_overview, nasdoom_control, "
     "nas_backup_health, and nas_storage_inventory. Summarize."

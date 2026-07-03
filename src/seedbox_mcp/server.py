@@ -24,6 +24,7 @@ from seedbox_mcp.tools.downloads import (
     sabnzbd_overview,
 )
 from seedbox_mcp.tools.escalate import DEFAULT_ESCALATION_WORKER, DEFAULT_TARGET_REPO, escalate_to_worker
+from seedbox_mcp.tools.fleet import fleet_health
 from seedbox_mcp.tools.host_health import (
     nas_disk_health,
     nas_log_search,
@@ -686,6 +687,15 @@ def create_mcp(services: Services) -> FastMCP:
         hundred MB), so don't call it repeatedly in one conversation."""
         return await nas_internet_speed_test()
 
+    async def fleet_health_tool() -> dict[str, Any]:
+        """Whole-cluster health in one call: up/down for every cluster node
+        (NAS, ROOM, apple-node, Jetson, ailogueos) AND every service,
+        including the non-media ones (AdGuard, Vaultwarden, monitoring) that
+        nasdoom_health doesn't cover. USE THIS to answer "is everything up
+        across the NAS/cluster" or to catch a node/non-media outage.
+        nasdoom_health stays the right call for a media-stack-only rollup."""
+        return await fleet_health(services)
+
     async def content_release_status_tool(query: str) -> dict[str, Any]:
         """Answer whether a movie/show/anime is out yet, streaming yet, or
         has a new season/batch out — via Perplexity's web-grounded search,
@@ -1139,6 +1149,7 @@ def create_mcp(services: Services) -> FastMCP:
     register_tool(mcp, "nas_internet_speed_test", READ_ONLY, nas_internet_speed_test_tool)
     register_tool(mcp, "web_search", READ_ONLY, web_search_tool)
     register_tool(mcp, "content_release_status", READ_ONLY, content_release_status_tool)
+    register_tool(mcp, "fleet_health", READ_ONLY, fleet_health_tool)
     register_tool(mcp, "web_fetch", READ_ONLY, web_fetch_tool)
     register_tool(mcp, "poster_ocr", READ_ONLY, poster_ocr_tool)
     register_tool(mcp, "prowlarr_overview", READ_ONLY, prowlarr_overview_tool)

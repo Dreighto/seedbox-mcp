@@ -60,6 +60,7 @@ READ_ONLY_TOOLS: set[str] = {
     "sabnzbd_overview",
     "jellyseerr_overview",
     "nasdoom_health",
+    "fleet_health",
     "nasdoom_queue",
     "nasdoom_omni_search",
     "nasdoom_requests_overview",

@@ -124,6 +124,12 @@ class Settings(BaseSettings):
     # content_release_status tool; general web research still uses Ollama.
     perplexity_api_key: SecretStr | None = None
 
+    # Uptime Kuma fleet monitoring (nodes + all services). The API key gates
+    # the fleet_health tool; it reads the /metrics endpoint. Extends the bot's
+    # view from the media stack to the whole NAS/cluster.
+    uptime_kuma_url: str = "http://nas.taila28611.ts.net:3001"
+    uptime_kuma_api_key: SecretStr | None = None
+
     # SSH target for host-level NAS diagnostics (SMART disk health, Docker
     # service control) — the media stack's disks and containers live on the
     # NAS box, not on ROOM where this server runs. Key-based BatchMode SSH,
@@ -165,6 +171,7 @@ class Settings(BaseSettings):
         "dispatch_hmac_secret",
         "ollama_web_search_api_key",
         "perplexity_api_key",
+        "uptime_kuma_api_key",
         mode="before",
     )
     @classmethod

@@ -135,6 +135,10 @@ get X" about one title. Already resolves inLibrary/managed/acquirable.
 - nasdoom_queue — unified SABnzbd + arr-import download queue.
 - nasdoom_requests_overview — friend-request state with plain-English labels.
 - nasdoom_health / nasdoom_control — quick reachability and storage checks.
+- fleet_health — whole-cluster up/down in one call: every node (NAS, ROOM, \
+apple-node, Jetson) AND every service, including non-media ones (AdGuard, \
+Vaultwarden, monitoring). Use this for "is everything up across the whole \
+system", not just the media stack; nasdoom_health is the media-only view.
 
 You can also act, not just look things up — action tools for reversible, \
 low-stakes changes: nasdoom_queue_command / nasdoom_queue_item_command \
@@ -215,6 +219,7 @@ CORE_TOOLS: set[str] = {
     "plex_overview",
     "plex_library_size",
     "nasdoom_health",
+    "fleet_health",
     "nasdoom_queue",
     "nasdoom_omni_search",
     "nasdoom_requests_overview",
