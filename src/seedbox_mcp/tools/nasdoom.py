@@ -459,6 +459,14 @@ async def nasdoom_add(
             "monitored": monitored,
             "searchNow": search_now,
         }
+        # Send ONLY the fields that are actually set. An unset qualityProfileId
+        # or rootFolderPath means "let NASDOOM pick the content-aware default",
+        # which is expressed by OMITTING the key — never by sending null.
+        # Sending qualityProfileId:null triggered a NASDOOM bug (its route
+        # coerced Number(null)->0, and addTitle's `?? ` kept 0, resolving the
+        # profile to 0 -> no_root_folder_or_profile). Fixed on the BFF side too,
+        # but omitting is the correct request contract regardless.
+        body = {k: v for k, v in body.items() if v is not None}
         if not confirm:
             # No dry-run concept on NASDOOM's side (its own double-add guard
             # only fires on the real POST) — echo back what would be sent.
@@ -475,10 +483,11 @@ async def nasdoom_add(
                     "a missing value, unless the operator asked for a specific one.",
                 }
             )
-        # NASDOOM intermittently 500s with no_root_folder_or_profile on the
-        # first add (a race resolving the arr's root folder/profile) and then
-        # succeeds on an immediate retry — observed live for both a movie and
-        # a TV series. _nasdoom_add_with_retry handles that transient.
+        # _nasdoom_add_with_retry retries a no_root_folder_or_profile 500. The
+        # original cause of that error was NOT a race (retrying never helped —
+        # it was the deterministic qualityProfileId:null->0 bug above, now fixed
+        # on both sides); the retry stays as cheap insurance against a genuine
+        # transient arr-resolution blip.
         result = await _nasdoom_add_with_retry(services, body)
         return ToolResponse.success({"dry_run": False, **result})
 
