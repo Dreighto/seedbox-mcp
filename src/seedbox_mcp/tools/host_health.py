@@ -42,13 +42,25 @@ _RES_SCRIPT = (
 )
 _RES_CMD = "python3 -c " + shlex.quote(_RES_SCRIPT)
 
-# Hard allowlist of restartable containers on the NAS — media stack only.
-# n8n, ollama, and cloudflared deliberately excluded: they're shared
-# infrastructure other systems depend on, restarting them is
-# escalate_to_worker territory, not a Tier-1 bot action. The allowlist is
-# enforced in code, so a hallucinated or mistyped name fails validation
-# before anything runs.
-RESTARTABLE_SERVICES: set[str] = {
+# Container restart allowlists, split into two tiers on purpose.
+#
+# AUTO_RECOVER_SERVICES — the conservative set the MONITOR may restart
+# unattended (see monitor._deterministic_service_recovery). Media stack only:
+# every one is self-contained, so a stopped→restart carries no blast radius
+# beyond that one service, and "container is down → bring it back" needs no
+# judgment. tdarr is media-adjacent (transcoding) and equally self-contained.
+#
+# RESTARTABLE_SERVICES — the wider set the BOT may restart on an explicit,
+# confirm-gated operator request. Superset that adds the beyond-media
+# services (AdGuard/Vaultwarden/monitoring). These are deliberately NOT in
+# the auto-recover set: silently bouncing DNS (AdGuard) or the password vault
+# on a monitor cycle is higher-stakes than a media container, so they stay
+# request-only until they earn auto-recovery the same way the media stack did
+# (proven, graduated), not by default.
+#
+# Both are enforced in code, so a hallucinated or mistyped name fails
+# validation before anything runs.
+AUTO_RECOVER_SERVICES: set[str] = {
     "plex",
     "radarr",
     "sonarr",
@@ -59,7 +71,25 @@ RESTARTABLE_SERVICES: set[str] = {
     "kometa",
     "recyclarr",
     "filebrowser",
+    "tdarr",
 }
+
+# Beyond-media services the bot may restart on request but the monitor must
+# NOT auto-restart. Exact container names as they appear in `docker ps`.
+BEYOND_MEDIA_SERVICES: set[str] = {
+    "adguardhome",
+    "vaultwarden",
+    "uptime-kuma",
+    "gotify",
+}
+
+RESTARTABLE_SERVICES: set[str] = AUTO_RECOVER_SERVICES | BEYOND_MEDIA_SERVICES
+
+# Shared infrastructure other systems depend on — restarting these is
+# escalate_to_worker territory, never a bot action. Named explicitly so the
+# not_permitted message can tell the operator WHY (shared infra) instead of a
+# generic "not on the list", which reads like a mistake.
+EXCLUDED_INFRA: set[str] = {"cloudflared", "n8n", "ollama"}
 
 # SMART attribute thresholds, Backblaze-drive-stats style (337k+ drives):
 # a raw pass/fail hides drives that are statistically about to die. Each
@@ -217,8 +247,24 @@ async def nas_service_status(services: Services, name: str | None = None) -> dic
 
 
 async def nas_service_restart(services: Services, name: str, confirm: bool = False) -> dict[str, Any]:
+    """Restart one NAS container, confirm-gated. Covers the media stack AND
+    the beyond-media services (AdGuard, Vaultwarden, Uptime Kuma, Gotify) on
+    an explicit operator request. Shared infrastructure (cloudflared, n8n,
+    ollama) is off the allowlist on purpose — those get escalate_to_worker,
+    not a restart. Always previews with confirm=false first (returns the
+    container's current state); a real restart runs only on confirm=true in a
+    later turn, and the post-restart verified_running flag is computed in code
+    so the outcome reported is the real one."""
+
     async def run() -> dict[str, Any]:
         if name not in RESTARTABLE_SERVICES:
+            if name in EXCLUDED_INFRA:
+                return ToolResponse.failure(
+                    "not_permitted",
+                    f"{name!r} is shared infrastructure other systems depend on — restarting it is "
+                    "an escalate_to_worker action, not a Tier-1 bot restart.",
+                    {"reason": "shared_infrastructure", "escalate": True},
+                )
             return ToolResponse.failure(
                 "not_permitted",
                 f"{name!r} is not a restartable service.",

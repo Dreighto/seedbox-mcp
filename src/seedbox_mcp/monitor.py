@@ -18,7 +18,7 @@ from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.telegram import send_message
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
-from seedbox_mcp.tools.host_health import RESTARTABLE_SERVICES
+from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -274,7 +274,7 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     down = [
         s
         for s in services
-        if s.get("name") in RESTARTABLE_SERVICES and s.get("state") not in ("running", "restarting")
+        if s.get("name") in AUTO_RECOVER_SERVICES and s.get("state") not in ("running", "restarting")
     ]
     if not down:
         return None
