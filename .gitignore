@@ -18,3 +18,4 @@ todo_human.md
 .telegram_bot_friend_pending.json
 .telegram_bot_friend_allowlist.json
 .friend_request_tracking.json
+.friend_error_watch_state.json
