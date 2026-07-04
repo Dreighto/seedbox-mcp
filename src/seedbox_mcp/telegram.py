@@ -42,6 +42,14 @@ def format_for_telegram(text: str) -> str:
     constantly."""
     text = re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
 
+    # No em/en-dashes in any bot reply (operator's standing no-slop rule). The
+    # model is told this in its prompt but ignores it often enough that we
+    # enforce it deterministically here — applies to BOTH bots via send_message.
+    # A numeric range keeps a hyphen; any other dash becomes a comma, which
+    # reads naturally in place of the em-dash the model reaches for.
+    text = re.sub(r"(?<=\d)\s*–\s*(?=\d)", "-", text)
+    text = re.sub(r"\s*[—–]\s*", ", ", text)
+
     lines = text.split("\n")
     out_lines: list[str] = []
     i = 0
