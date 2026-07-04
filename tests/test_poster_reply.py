@@ -24,3 +24,12 @@ def test_extra_poster_markers_stripped_from_text() -> None:
     r = "A [POSTER:https://image.tmdb.org/t/p/w500/a.jpg] and B [POSTER:https://image.tmdb.org/t/p/w500/b.jpg]"
     assert _POSTER_RE.search(r).group(1) == "https://image.tmdb.org/t/p/w500/a.jpg"
     assert "[POSTER:" not in _ANY_POSTER_RE.sub("", r)
+
+
+def test_search_query_strips_trailing_year() -> None:
+    from seedbox_mcp.tools.jellyseerr import _clean_query
+
+    assert _clean_query("Dream Eater 2025") == "Dream Eater"
+    assert _clean_query("The Godfather (1972)") == "The Godfather"
+    assert _clean_query("Her") == "Her"
+    assert _clean_query("2025") == "2025"  # bare year is not stripped to empty

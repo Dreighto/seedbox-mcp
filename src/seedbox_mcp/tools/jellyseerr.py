@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import quote
+
+# Jellyseerr's search is title-only and returns NOTHING if a year is tacked on
+# ("Dream Eater 2025" → [], "The Godfather 1972" → []). The model naturally
+# appends the year it knows, so strip a trailing year (bare or parenthesized)
+# before searching; the year is still used to disambiguate the results after.
+_TRAILING_YEAR_RE = re.compile(r"[\s(]+(?:19|20)\d{2}\)?\s*$")
+
+
+def _clean_query(query: str) -> str:
+    cleaned = _TRAILING_YEAR_RE.sub("", query).strip()
+    return cleaned or query
 
 from seedbox_mcp.action_audit import recent_real_action_count_for, record_action
 from seedbox_mcp.runtime import Services
@@ -82,7 +94,7 @@ async def jellyseerr_search(services: Services, query: str) -> dict[str, Any]:
         # ArrClient's params= dict encodes spaces as "+", which Jellyseerr's
         # own validator rejects ("must be url encoded"). Pre-encode with
         # %20 and pass the whole querystring as the path instead.
-        raw = await services.jellyseerr.get(f"/api/v1/search?query={quote(query)}")
+        raw = await services.jellyseerr.get(f"/api/v1/search?query={quote(_clean_query(query))}")
         results = raw.get("results", []) if isinstance(raw, dict) else []
         # This is the direct Jellyseerr search, not NASDOOM's omni-search,
         # specifically because Jellyseerr's response carries TMDB's real
