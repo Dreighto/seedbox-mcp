@@ -448,6 +448,12 @@ def main() -> None:
     if not args.force_alert_test:
         fingerprint = hashlib.sha256(result.encode()).hexdigest()
         should_push, new_state = _alert_decision(fingerprint, _load_alert_state(), time.time())
+        # Keep the alert TEXT alongside the dedup hash: the interactive bot
+        # injects the active alert into its context, so when the operator
+        # replies "investigate and fix it" the bot knows what "it" is (the
+        # alert was pushed by THIS process — it's not in the bot's own chat
+        # history). Cleared with the rest of the state on the all-clear path.
+        new_state["text"] = result
         _save_alert_state(new_state)
         if not should_push:
             print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")

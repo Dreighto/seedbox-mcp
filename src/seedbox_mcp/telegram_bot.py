@@ -537,6 +537,24 @@ def _build_context(active: set[str]) -> tuple[str, set[str]]:
         tools |= section["tools"]
     return "\n".join(prompt_parts), tools
 
+
+# The monitor pushes alerts to the operator's chat from a SEPARATE process, so
+# they are invisible to this bot's conversation history. When the operator
+# replies "investigate and fix it", "it" refers to an alert this bot never saw
+# — observed live 2026-07-04: the bot answered "I don't see any active issues"
+# from stale history while The Irishman sat import-blocked with an alert
+# firing for hours. Inject the active alert so the referent exists.
+_MONITOR_ALERT_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_alert_state.json"
+
+
+def _active_monitor_alert() -> str | None:
+    try:
+        state = json.loads(_MONITOR_ALERT_STATE_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    text = state.get("text")
+    return str(text) if text else None
+
 # Answered directly, without going through the model, when the message is
 # exactly "/help" or "/start" (checked before run_agent_turn in
 # _handle_message). Deterministic and instant: capability questions don't
@@ -639,6 +657,22 @@ async def _handle_message(
     active_sections = _select_sections(text, active_sections)
     system_prompt, allowed_tools = _build_context(active_sections)
 
+    # Give the model the alert the operator is most likely replying to (see
+    # _active_monitor_alert). Cleared automatically when the monitor's next
+    # clean cycle wipes the state, so this never carries a stale alert.
+    active_alert = _active_monitor_alert()
+    if active_alert:
+        system_prompt += (
+            "\n\nACTIVE MONITOR ALERT — the background monitor pushed this to the operator "
+            "earlier (it is NOT in this conversation's history). If they say 'it' / 'fix it' / "
+            "'investigate' without naming something else, they almost certainly mean this:\n"
+            f"{active_alert}\n"
+            "Before saying ANYTHING about this alert's status, verify the CURRENT live state "
+            "with the relevant tools (nas_import_diagnosis, nasdoom_queue, nas_service_status, "
+            "...). It may have resolved or changed since it fired — never report it fine or "
+            "fixed from memory."
+        )
+
     # Escalate to the bigger model for diagnostic/fix intent (unless a caller
     # already pinned a model, e.g. the photo path). Multi-step investigation
     # needs the reliability + the extra tool rounds.
@@ -672,6 +706,34 @@ async def _handle_message(
             **run_kwargs,
         )
         logger.info("reply: %r", reply)
+        # Investigation turns must be grounded in tools, not memory. Observed
+        # live: "Investigate and fix it" answered with a confident all-clear
+        # and ZERO tool calls (stale history said the previous issue was
+        # resolved; the live one wasn't). Deterministic check: count tool-role
+        # messages added this turn; if an investigation ran none, force one
+        # continuation that requires real checks before we send anything.
+        if _is_investigation(text):
+            prior_tools = sum(1 for m in state.get("history", []) if m.get("role") == "tool")
+            new_tools = sum(1 for m in new_history if m.get("role") == "tool")
+            if new_tools <= prior_tools and reply.strip():
+                logger.warning("investigation turn made no tool calls — forcing verification")
+                reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
+                    "(system note, not the operator: your last reply answered an INVESTIGATE request "
+                    "without running a single tool — that answer came from conversation memory and may "
+                    "be stale or wrong. Verify the live state NOW with the relevant tools "
+                    "(nas_import_diagnosis, nasdoom_queue, nas_service_status, fleet_health, ...) and "
+                    "answer again from what the tools actually return.)",
+                    system_prompt=system_prompt,
+                    mcp_client=mcp_client,
+                    model=chosen_model or settings.ollama_bot_model,
+                    allowed_tools=allowed_tools & (READ_ONLY_TOOLS | ACTION_TOOLS | ESCALATION_TOOLS),
+                    history=new_history,
+                    pending_action=new_pending_action,
+                    known_entity_ids=new_known_entity_ids,
+                    ollama_url=settings.ollama_url,
+                    **run_kwargs,
+                )
+                logger.info("verification reply: %r", reply)
     except Exception:
         logger.exception("agent turn failed for message: %r", text)
         await send_message(
