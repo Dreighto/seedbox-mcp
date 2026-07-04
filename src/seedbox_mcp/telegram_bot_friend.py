@@ -136,6 +136,65 @@ def _save_pending_seen(seen: set[int]) -> None:
         logger.exception("failed to persist pending-enrollment set to %s", PENDING_SEEN_PATH)
 
 
+# Chat_ids the operator approved at RUNTIME (via the enrollment ping's Approve
+# button), merged with the env allowlist. Lets a friend be let in with a tap,
+# no restart — persisted so approvals survive a restart.
+ALLOWLIST_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_friend_allowlist.json"
+
+
+def _load_dynamic_allowlist() -> set[int]:
+    try:
+        return {int(x) for x in json.loads(ALLOWLIST_PATH.read_text())}
+    except (OSError, ValueError, json.JSONDecodeError):
+        return set()
+
+
+def _save_dynamic_allowlist(ids: set[int]) -> None:
+    try:
+        ALLOWLIST_PATH.write_text(json.dumps(sorted(ids)))
+    except OSError:
+        logger.exception("failed to persist dynamic allowlist to %s", ALLOWLIST_PATH)
+
+
+async def _send_enroll_request(token: str, admin_chat_id: int, name: str, handle: str, chat_id: int) -> None:
+    """Ping the operator with Approve/Decline buttons for a new person. Sent via
+    the FRIEND bot's own token so the button callback comes back to THIS bot's
+    getUpdates loop (self-contained — no operator-bot changes)."""
+    label = f"✅ Approve {name}"
+    async with httpx.AsyncClient(timeout=15.0) as http:
+        await http.post(
+            f"{TELEGRAM_API}/bot{token}/sendMessage",
+            json={
+                "chat_id": admin_chat_id,
+                "text": f"New person wants access to the Plex helper bot:\n{name}{handle}\n(id {chat_id})",
+                "reply_markup": {
+                    "inline_keyboard": [
+                        [
+                            {"text": label[:64], "callback_data": f"enroll_ok:{chat_id}"},
+                            {"text": "🚫 Decline", "callback_data": f"enroll_no:{chat_id}"},
+                        ]
+                    ]
+                },
+            },
+        )
+
+
+async def _answer_callback(token: str, callback_id: str, text: str) -> None:
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        await http.post(
+            f"{TELEGRAM_API}/bot{token}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text},
+        )
+
+
+async def _edit_message_text(token: str, chat_id: int, message_id: int, text: str) -> None:
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        await http.post(
+            f"{TELEGRAM_API}/bot{token}/editMessageText",
+            json={"chat_id": chat_id, "message_id": message_id, "text": text},
+        )
+
+
 class ChatState(dict[str, Any]):
     """Same shape as telegram_bot.py's ChatState — {"history": [...],
     "pending_action": {...} | None, "known_entity_ids": {...}}."""
@@ -380,7 +439,11 @@ async def run_bot() -> None:
     if not settings.nasdoom_helper_telegram_bot_token:
         raise SystemExit("NASDOOM_HELPER_TELEGRAM_BOT_TOKEN must be set in .env")
     token = settings.nasdoom_helper_telegram_bot_token.get_secret_value()
-    allowed_chat_ids = set(settings.nasdoom_helper_telegram_allowed_chat_ids)
+    # env allowlist + operator-approved-at-runtime ids (Approve button)
+    dynamic_allowlist = _load_dynamic_allowlist()
+    allowed_chat_ids = set(settings.nasdoom_helper_telegram_allowed_chat_ids) | dynamic_allowlist
+    # only THIS chat_id may approve enrollments (the operator's Telegram user id)
+    admin_chat_id = settings.nas_ops_telegram_allowed_chat_id
     if not allowed_chat_ids:
         logger.warning(
             "NASDOOM_HELPER_TELEGRAM_ALLOWED_CHAT_IDS is empty — every message will be ignored until "
@@ -416,6 +479,56 @@ async def run_bot() -> None:
 
             for update in updates:
                 offset = update["update_id"] + 1
+
+                # Enrollment approval: the operator tapped Approve/Decline on an
+                # enrollment ping. Only the operator's own Telegram id may act,
+                # and it takes effect live (no restart) — the approved id is
+                # added to the in-memory allowlist + persisted.
+                cbq = update.get("callback_query")
+                if cbq:
+                    data = str(cbq.get("data") or "")
+                    if not data.startswith(("enroll_ok:", "enroll_no:")):
+                        continue
+                    cb_id = cbq.get("id")
+                    frm_id = (cbq.get("from") or {}).get("id")
+                    cb_msg = cbq.get("message") or {}
+                    cb_chat = (cb_msg.get("chat") or {}).get("id")
+                    cb_mid = cb_msg.get("message_id")
+                    if admin_chat_id is None or frm_id != admin_chat_id:
+                        if cb_id:
+                            await _answer_callback(token, cb_id, "Not allowed.")
+                        continue
+                    try:
+                        target = int(data.split(":", 1)[1])
+                    except ValueError:
+                        if cb_id:
+                            await _answer_callback(token, cb_id, "Bad request.")
+                        continue
+                    if data.startswith("enroll_ok:"):
+                        allowed_chat_ids.add(target)
+                        dynamic_allowlist.add(target)
+                        _save_dynamic_allowlist(dynamic_allowlist)
+                        if cb_id:
+                            await _answer_callback(token, cb_id, "Approved ✅")
+                        if cb_chat and cb_mid:
+                            await _edit_message_text(token, cb_chat, cb_mid, f"✅ Approved — id {target} can now use the bot.")
+                        try:
+                            await send_message(
+                                token, target,
+                                "You're all set! Ask me for any movie or show and I'll send it to "
+                                "the owner to approve.",
+                            )
+                        except Exception:
+                            logger.warning("couldn't message newly-approved friend %s", target)
+                        logger.info("enrollment approved: chat_id=%s", target)
+                    else:
+                        if cb_id:
+                            await _answer_callback(token, cb_id, "Declined")
+                        if cb_chat and cb_mid:
+                            await _edit_message_text(token, cb_chat, cb_mid, f"🚫 Declined — id {target} was not added.")
+                        logger.info("enrollment declined: chat_id=%s", target)
+                    continue
+
                 message = update.get("message") or {}
                 chat = message.get("chat") or {}
                 chat_id = chat.get("id")
@@ -441,17 +554,12 @@ async def run_bot() -> None:
                             "Hi! I help with the Plex server, but you're not set up yet. "
                             "I've let the owner know, so hang tight and they'll add you soon.",
                         )
-                        op_token = settings.nas_ops_telegram_bot_token
-                        op_chat = settings.nas_ops_telegram_allowed_chat_id
-                        if op_token and op_chat:
+                        # Ping the operator with Approve/Decline buttons, via THIS
+                        # bot's token so the tap comes back here and takes effect
+                        # live. Falls back to nothing if no admin chat is set.
+                        if admin_chat_id:
                             handle = f" (@{uname})" if uname else ""
-                            await send_message(
-                                op_token.get_secret_value(),
-                                op_chat,
-                                f"New person wants access to the Plex helper bot: {name}{handle}, "
-                                f"chat_id {chat_id}. To let them in, add {chat_id} to "
-                                "NASDOOM_HELPER_TELEGRAM_ALLOWED_CHAT_IDS and restart the friend bot.",
-                            )
+                            await _send_enroll_request(token, admin_chat_id, name, handle, chat_id)
                     continue
                 if not text:
                     continue
