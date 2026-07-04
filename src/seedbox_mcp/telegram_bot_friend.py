@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -395,8 +396,14 @@ Formatting: plain Telegram text. No tables, and only single *asterisks* \
 for bold (double **asterisks** show up literally). A couple of short \
 sentences, never a report.
 
-Writing style: no em-dashes, no filler ("it's important to note"), no \
-hedging ("might potentially"), no corporate words. Say the thing plainly.
+Writing style, talk like a real person texting a friend, not a chatbot: no \
+em-dashes. No filler openers ("it's important to note", "that being said", \
+"just to confirm"). No hedging ("might potentially", "I'd be happy to"). \
+None of these AI/corporate words, ever: delve, leverage, utilize, seamless, \
+robust, comprehensive, elevate, streamline, foster, unlock, dive into, \
+navigate, ensure, facilitate, enhance, curated, tailored. No hype adjectives \
+(amazing, incredible, fantastic) unless you actually mean it. Contractions \
+are good. Short sentences. Say the thing plainly, the way you'd text it.
 """
 
 HELP_TEXT = """\
@@ -407,6 +414,8 @@ plain terms:
 - Request something new. Just ask, like "can you get Dune" or "do you have \
 The Bear". Heads up: requests go to the owner to approve first, so it is not \
 instant; I'll let you know once it's approved and on the way.
+- Not sure of the name? Send me a photo of the poster or cover and I'll \
+figure out what it is.
 - Check if a new movie, or a new season or batch of an anime, is actually \
 out yet or streaming yet.
 - Grab something that just came out. Heads up: if a movie only just hit \
@@ -436,6 +445,78 @@ class FriendBotSettings(Settings):
     @property
     def mcp_url(self) -> str:
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
+
+
+async def _download_telegram_photo(token: str, file_id: str) -> bytes:
+    async with httpx.AsyncClient(timeout=20.0) as http:
+        resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})
+        resp.raise_for_status()
+        file_path = resp.json()["result"]["file_path"]
+        resp = await http.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
+        resp.raise_for_status()
+        return resp.content
+
+
+async def _handle_photo_message(
+    settings: FriendBotSettings,
+    token: str,
+    chat_id: int,
+    photo_sizes: list[dict[str, Any]],
+    caption: str,
+    state: ChatState,
+    requester_name: str = "a friend",
+) -> ChatState:
+    """A friend sent a photo of a poster. Download it, OCR it in code (the
+    model can't fetch Telegram bytes), then route the extracted text through
+    the normal pipeline so the model identifies the title, SHOWS its poster,
+    and offers to add it — closing the loop on the operator's old 'friend
+    sends me a poster screenshot, I ID it by hand' pain."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+    largest = max(photo_sizes, key=lambda p: p.get("file_size") or (p.get("width", 0) * p.get("height", 0)))
+    try:
+        image_bytes = await _download_telegram_photo(token, largest["file_id"])
+    except httpx.HTTPError:
+        logger.exception("failed to download friend photo")
+        await send_message(token, chat_id, "I couldn't download that photo. Mind sending it again?")
+        return state
+
+    mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
+    try:
+        async with mcp_client:
+            result = await mcp_client.call_tool("poster_ocr", {"image_b64": base64.b64encode(image_bytes).decode()})
+        ocr_data = json.loads("\n".join(b.text for b in result.content if hasattr(b, "text"))).get("data", {})
+    except Exception:
+        logger.exception("friend poster OCR failed")
+        await send_message(token, chat_id, "I couldn't read that image right now. You can also just type the title.")
+        return state
+
+    texts = ocr_data.get("texts_by_prominence", [])
+    logger.info("friend photo OCR: %r", texts)
+    if not texts:
+        await send_message(token, chat_id, "I couldn't make out any text on that. Is it a clear shot of the poster? Or just type the title.")
+        return state
+
+    extracted = "; ".join(f'"{t["text"]}" (confidence {t.get("confidence", 0):.2f})' for t in texts[:8])
+    all_single_words = all(len(str(t.get("text", "")).split()) <= 1 for t in texts)
+    sparse = (
+        " WARNING: every fragment is a single word, which is thin evidence for a specific title; if you are "
+        "not confident, ask them to type the title rather than guessing."
+        if all_single_words
+        else ""
+    )
+    task = (
+        f"The person sent a photo of a movie or TV poster (not a request in words). OCR read exactly this "
+        f"text off it, largest/most prominent first: {extracted}.{sparse} "
+        f"{'They also wrote: ' + caption + '. ' if caption else ''}"
+        "That is the COMPLETE list of text found. Work out which single title this poster is for: poster "
+        "fonts and logos often garble OCR, so combine ALL the fragments (garbled ones included) into one "
+        "likely title and search for it with jellyseerr_search. Then tell them which title you think it is "
+        "and SHOW ITS POSTER (the [POSTER:...] rule), and ask if that's the one they want added. If you "
+        "genuinely can't tell, say so and ask them to type the title. Do NOT request anything yet, confirm "
+        "the title with them first."
+    )
+    return await _handle_message(settings, token, chat_id, task, state, requester_name)
 
 
 async def _handle_message(
@@ -615,17 +696,29 @@ async def run_bot() -> None:
                             handle = f" (@{uname})" if uname else ""
                             await _send_enroll_request(token, admin_chat_id, name, handle, chat_id)
                     continue
+                # The requester's real name from Telegram (trusted) — bound to
+                # their held requests for the operator's approval card.
+                frm = message.get("from") or {}
+                requester_name = str(frm.get("first_name") or frm.get("username") or "a friend").strip()[:80]
+                state = chat_states.get(chat_id, ChatState(history=[], pending_action=None, known_entity_ids={}))
+
+                # Photo of a poster → identify it (OCR) and offer to add it.
+                photo = message.get("photo")
+                if photo:
+                    logger.info("photo from chat_id=%s (%d sizes)", chat_id, len(photo))
+                    caption = message.get("caption") or ""
+                    chat_states[chat_id] = await _handle_photo_message(
+                        settings, token, chat_id, photo, caption, state, requester_name
+                    )
+                    _save_chat_states(chat_states)
+                    continue
+
                 if not text:
                     continue
                 logger.info("message from chat_id=%s: %r", chat_id, text)
                 if text.strip().split()[0].split("@")[0] in ("/help", "/start"):
                     await send_message(token, chat_id, HELP_TEXT)
                     continue
-                # The requester's real name from Telegram (trusted) — bound to
-                # their held requests for the operator's approval card.
-                frm = message.get("from") or {}
-                requester_name = str(frm.get("first_name") or frm.get("username") or "a friend").strip()[:80]
-                state = chat_states.get(chat_id, ChatState(history=[], pending_action=None, known_entity_ids={}))
                 chat_states[chat_id] = await _handle_message(settings, token, chat_id, text, state, requester_name)
                 _save_chat_states(chat_states)
 
