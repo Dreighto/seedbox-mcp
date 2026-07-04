@@ -557,6 +557,36 @@ async def _handle_photo_message(
     return await _handle_message(settings, token, chat_id, task, state, requester_name)
 
 
+# A reply that PROMISES to act and then ends the turn is a lie by design —
+# the bot has no way to follow up later, so the person waits for a message
+# that will never come. The prompt forbids it, but the model still does it,
+# so we catch it deterministically and force a continuation in the same
+# handler. Matches promise-to-act-NOW phrasing ("one sec", "give me a
+# second/moment", "hold on", "I'll go ahead and...", "let me check/search")
+# — deliberately NOT "I'll let you know when it's ready" (the notifier
+# really does send that follow-up) and NOT "let me know if ..." (asking THEM).
+_PUNT_RE = re.compile(
+    r"(one sec\b|give me a (second|sec|moment|minute)|hold on\b|hang tight\b|hang on\b"
+    r"|be right back|checking now\b|searching now\b|looking into it"
+    r"|let me (check|search|look|see what|find|dig)"
+    r"|i['’]ll (go ahead and|check|search|look|see what|find|get back to you))",
+    re.IGNORECASE,
+)
+
+_PUNT_CONTINUATION = (
+    "(system note, the person did not say this: your last reply promised to check/search/do "
+    "something and then STOPPED. You cannot send another message later, so that promise sends "
+    "them nothing. Do the thing NOW: call the tools you need, and reply with the actual result. "
+    "Do not promise again, do not say 'one sec' or 'let me check', just deliver the answer.)"
+)
+
+# Honest last resort if the model punts even after being forced to continue —
+# never leave a "give me a second" as the final word.
+_PUNT_FALLBACK = (
+    "Sorry, I couldn't finish that one just now. Ask me again and I'll get you an answer right away."
+)
+
+
 async def _handle_message(
     settings: FriendBotSettings,
     token: str,
@@ -573,24 +603,46 @@ async def _handle_message(
     # the model (which could be talked into a different name). The prompt line
     # is only so the model refers to them naturally; the tool arg is authoritative.
     system_prompt = f"{SYSTEM_PROMPT}\n\nThe person you are helping is {requester_name}."
+    turn_kwargs: dict[str, Any] = dict(
+        system_prompt=system_prompt,
+        mcp_client=mcp_client,
+        model=settings.ollama_friend_bot_model,
+        allowed_tools=FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS,
+        action_tools=FRIEND_CONFIRM_TOOLS,
+        ollama_url=settings.ollama_url,
+        max_tool_rounds=10,
+        tool_arg_overrides={
+            "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
+        },
+    )
     try:
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
             text,
-            system_prompt=system_prompt,
-            mcp_client=mcp_client,
-            model=settings.ollama_friend_bot_model,
-            allowed_tools=FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS,
-            action_tools=FRIEND_CONFIRM_TOOLS,
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
             known_entity_ids=state.get("known_entity_ids"),
-            ollama_url=settings.ollama_url,
-            max_tool_rounds=10,
-            tool_arg_overrides={
-                "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
-            },
+            **turn_kwargs,
         )
         logger.info("reply: %r", reply)
+        # Punt guard: the reply promised to act "in a second" — force it to
+        # actually do the work now, in this same handler, so the person gets
+        # a real answer instead of a promise that never resolves.
+        attempts = 0
+        while reply.strip() and _PUNT_RE.search(reply) and attempts < 2:
+            attempts += 1
+            logger.warning("punt detected (attempt %d), forcing continuation: %r", attempts, reply[:120])
+            reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
+                _PUNT_CONTINUATION,
+                history=new_history,
+                pending_action=new_pending_action,
+                known_entity_ids=new_known_entity_ids,
+                **turn_kwargs,
+            )
+            logger.info("continuation reply: %r", reply)
+        if reply.strip() and _PUNT_RE.search(reply):
+            # still punting after two forced continuations — be honest instead
+            logger.error("punt persisted after %d continuations; sending honest fallback", attempts)
+            reply = _PUNT_FALLBACK
     except Exception:
         logger.exception("agent turn failed for message: %r", text)
         await send_message(token, chat_id, "Something went wrong there, try asking again?")
