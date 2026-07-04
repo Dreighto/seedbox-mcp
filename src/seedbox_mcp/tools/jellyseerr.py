@@ -57,6 +57,14 @@ def _availability(result: dict[str, Any]) -> str:
     return _MEDIA_STATUS.get(status, "not_available")
 
 
+_TMDB_IMG = "https://image.tmdb.org/t/p/w500"
+
+
+def _poster(poster_path: Any) -> str | None:
+    p = poster_path if isinstance(poster_path, str) else None
+    return f"{_TMDB_IMG}{p}" if p and p.startswith("/") else None
+
+
 def _year_from(result: dict[str, Any]) -> int | None:
     date = result.get("releaseDate") or result.get("firstAirDate")
     if date and len(str(date)) >= 4:
@@ -101,6 +109,9 @@ async def jellyseerr_search(services: Services, query: str) -> dict[str, Any]:
                 # "partially_available" for a series) is streamable now.
                 "availability": _availability(r),
                 "streamable_now": _availability(r) in ("available", "partially_available"),
+                # Full TMDB poster URL so the bot can SHOW the title (posters
+                # disambiguate way better than text). None when TMDB has no art.
+                "poster": _poster(r.get("posterPath")),
             }
             for r in filtered[:10]
         ]

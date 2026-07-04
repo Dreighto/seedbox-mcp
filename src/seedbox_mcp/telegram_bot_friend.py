@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,7 @@ from fastmcp import Client
 
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
 from seedbox_mcp.config import Settings
-from seedbox_mcp.telegram import TELEGRAM_API, send_message
+from seedbox_mcp.telegram import TELEGRAM_API, format_for_telegram, send_message
 
 logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
 
@@ -179,6 +180,42 @@ async def _send_enroll_request(token: str, admin_chat_id: int, name: str, handle
         )
 
 
+# The model marks a title's poster with [POSTER:<url>]; we only ever honor a
+# real TMDB image URL, so a mangled/hallucinated URL just degrades to a text
+# reply (and Telegram can't be pointed at an arbitrary host).
+_POSTER_RE = re.compile(r"\[POSTER:\s*(https://image\.tmdb\.org/[^\]\s]+)\s*\]", re.IGNORECASE)
+
+
+async def _send_reply(token: str, chat_id: int, reply: str) -> None:
+    """Send the bot's reply. If it carries a [POSTER:url] marker, send the
+    poster as a photo with the rest as the caption (less text, instant
+    'which movie'); otherwise plain text. Any photo failure degrades to text."""
+    m = _POSTER_RE.search(reply)
+    if not m:
+        await send_message(token, chat_id, reply)
+        return
+    url = m.group(1)
+    caption = format_for_telegram((reply[: m.start()] + reply[m.end() :]).strip())[:1024]
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.post(
+                f"{TELEGRAM_API}/bot{token}/sendPhoto",
+                json={"chat_id": chat_id, "photo": url, "caption": caption, "parse_mode": "Markdown"},
+            )
+            if r.status_code == 400:  # bad markdown in caption → retry plain
+                r = await http.post(
+                    f"{TELEGRAM_API}/bot{token}/sendPhoto",
+                    json={"chat_id": chat_id, "photo": url, "caption": caption},
+                )
+        if not r.is_error:
+            return
+        logger.warning("sendPhoto failed (%s), falling back to text", r.text[:150])
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
+        logger.warning("sendPhoto network error, falling back to text")
+    # photo path failed — still deliver the words
+    await send_message(token, chat_id, caption or "Here you go.")
+
+
 async def _answer_callback(token: str, callback_id: str, text: str) -> None:
     async with httpx.AsyncClient(timeout=10.0) as http:
         await http.post(
@@ -340,6 +377,16 @@ clearly say yes to that, grab that specific copy with nasdoom_grab_release \
 copy without that explicit "yes, I know it's low quality" — and always \
 prefer the normal request when a proper copy is or will be available.
 
+Show the poster: whenever you point to ONE specific title (a search result \
+you're offering to add, confirming what you're requesting, or giving one \
+title's status), show its poster by putting `[POSTER:<the poster URL from \
+that jellyseerr_search result>]` anywhere in your reply. Use the poster URL \
+EXACTLY as the search returned it (it starts with https://image.tmdb.org); \
+never invent one. When you show a poster, keep your words SHORT, a line or \
+two, the poster does the work of saying which title it is. Only for a single \
+title, never for a list of options (ask which one first) or general chat, \
+and skip it if that result had no poster.
+
 Content safety, not optional: never search for, describe, or offer \
 anything sexually explicit or adult. If asked, just say "I can't help with \
 that one" and move on — no detail, no alternatives.
@@ -435,7 +482,7 @@ async def _handle_message(
         return ChatState(
             history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
         )
-    await send_message(token, chat_id, reply)
+    await _send_reply(token, chat_id, reply)
     return ChatState(
         history=trim_history(new_history), pending_action=new_pending_action, known_entity_ids=new_known_entity_ids
     )
