@@ -185,18 +185,24 @@ async def _send_enroll_request(token: str, admin_chat_id: int, name: str, handle
 # real TMDB image URL, so a mangled/hallucinated URL just degrades to a text
 # reply (and Telegram can't be pointed at an arbitrary host).
 _POSTER_RE = re.compile(r"\[POSTER:\s*(https://image\.tmdb\.org/[^\]\s]+)\s*\]", re.IGNORECASE)
+# Strip ANY poster marker (valid or not) so none ever leaks into the text as
+# literal "[POSTER:...]" — e.g. when the model lists several picks each with
+# a marker, we render only the first real poster and clean the rest out.
+_ANY_POSTER_RE = re.compile(r"\[POSTER:[^\]]*\]", re.IGNORECASE)
 
 
 async def _send_reply(token: str, chat_id: int, reply: str) -> None:
-    """Send the bot's reply. If it carries a [POSTER:url] marker, send the
-    poster as a photo with the rest as the caption (less text, instant
-    'which movie'); otherwise plain text. Any photo failure degrades to text."""
+    """Send the bot's reply. If it carries a [POSTER:<tmdb url>] marker, send
+    the (first) poster as a photo with the rest as the caption; otherwise
+    plain text. Any extra/invalid markers are stripped from the text so they
+    never show up literally, and any photo failure degrades to text."""
     m = _POSTER_RE.search(reply)
+    text = _ANY_POSTER_RE.sub("", reply).strip()
     if not m:
-        await send_message(token, chat_id, reply)
+        await send_message(token, chat_id, text or reply)
         return
     url = m.group(1)
-    caption = format_for_telegram((reply[: m.start()] + reply[m.end() :]).strip())[:1024]
+    caption = format_for_telegram(text)[:1024]
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.post(
@@ -387,6 +393,27 @@ never invent one. When you show a poster, keep your words SHORT, a line or \
 two, the poster does the work of saying which title it is. Only for a single \
 title, never for a list of options (ask which one first) or general chat, \
 and skip it if that result had no poster.
+
+Recommendations and "help me decide what to watch": people will ask \
+open-ended things like "find me a scary movie for tonight", "what should I \
+watch", "something new and funny", or "movies like Interstellar". When they \
+do, DO THE WORK IN THIS SAME REPLY. Never answer "let me check" or "give me \
+a second" and stop, that sends them nothing and you cannot follow up later, \
+so it just leaves them hanging. And you MUST use your tools here, your own \
+memory is NOT good enough for this: your training is out of date so you do \
+not actually know what is new, and you have NO way to know what is on this \
+Plex server without checking it. So: STEP 1, call web_search to get current \
+titles that fit what they asked (for example "best new horror movies 2025"). \
+STEP 2, call jellyseerr_search for EACH title you are about to mention, to \
+find out if it is really on Plex. Only after those calls, write your answer: \
+2 to 4 concrete picks, the ones that came back on Plex FIRST (they can watch \
+those now) each with a one-line reason, and for a great pick that is not on \
+Plex, offer to add it. Show the poster for your top pick. Keep it short and \
+skimmable, then ask if they want one added or want other options. Listing \
+"new" titles from memory instead of web_search gives them stale, wrong info, \
+and saying a title is or is not on Plex without a jellyseerr_search this turn \
+is a false claim, do not do either. This "do it now with real tools, don't \
+just promise or guess from memory" rule applies to everything.
 
 Content safety, not optional: never search for, describe, or offer \
 anything sexually explicit or adult. If asked, just say "I can't help with \
