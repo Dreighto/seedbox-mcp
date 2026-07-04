@@ -26,6 +26,7 @@ seedbox-digest = "seedbox_mcp.digest:main"
 seedbox-telegram-bot = "seedbox_mcp.telegram_bot:main"
 seedbox-telegram-friend-bot = "seedbox_mcp.telegram_bot_friend:main"
 seedbox-monitor = "seedbox_mcp.monitor:main"
+seedbox-friend-notify = "seedbox_mcp.friend_notify:main"
 
 [build-system]
 requires = ["hatchling"]

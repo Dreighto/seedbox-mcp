@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from typing import Any
 
 from seedbox_mcp.action_audit import recent_real_action_count_for, record_action
+from seedbox_mcp.friend_tracking import track_request
 from seedbox_mcp.errors import MediaMcpError
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.schemas import ToolResponse
@@ -529,7 +531,12 @@ async def _nasdoom_add_with_retry(services: Services, body: dict[str, Any]) -> d
 
 
 async def nasdoom_friend_request(
-    services: Services, kind: str, tmdb_id: int, title: str, requested_by: str = "a friend"
+    services: Services,
+    kind: str,
+    tmdb_id: int,
+    title: str,
+    requested_by: str = "a friend",
+    requester_chat_id: int | None = None,
 ) -> dict[str, Any]:
     """Submit a friend's request for a movie or TV title. This HOLDS the title
     for the operator's approval and tags it with the friend's name — it does
@@ -561,6 +568,20 @@ async def nasdoom_friend_request(
         body = {"kind": kind, "tmdbId": tmdb_id, "gated": True, "requestedBy": requested_by}
         result = await _nasdoom_add_with_retry(services, body)
         held = bool(result.get("arrId"))
+        # Track it so the requester gets pinged on approval + when it's ready to
+        # watch. Needs their chat_id (bound by the bot); a held add without one
+        # still works, it just won't send status pings.
+        if held and requester_chat_id:
+            track_request(
+                chat_id=requester_chat_id,
+                name=requested_by,
+                service="sonarr" if kind == "tv" else "radarr",
+                arr_id=int(result["arrId"]),
+                tmdb_id=tmdb_id,
+                kind=kind,
+                title=title,
+                since=datetime.now(timezone.utc).isoformat(),
+            )
         record_action(
             "nasdoom_friend_request",
             {"kind": kind, "tmdb_id": tmdb_id, "requested_by": requested_by},

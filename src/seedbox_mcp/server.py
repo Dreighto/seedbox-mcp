@@ -1031,7 +1031,7 @@ def create_mcp(services: Services) -> FastMCP:
         )
 
     async def nasdoom_friend_request_tool(
-        kind: str, tmdb_id: int, title: str, requested_by: str = "a friend"
+        kind: str, tmdb_id: int, title: str, requested_by: str = "a friend", requester_chat_id: int | None = None
     ) -> dict[str, Any]:
         """Submit a FRIEND's request for a movie/TV title. Holds it for the
         operator's approval (tagged with the friend's name) — it does NOT
@@ -1039,9 +1039,10 @@ def create_mcp(services: Services) -> FastMCP:
         NASDOOM app. Single-step: call it once, only after the person has
         actually asked to add the title. kind: 'movie'|'tv'; get tmdb_id/title
         from jellyseerr_search first. Report the held result; never say it's
-        downloading or on Plex. requested_by is bound to the real requester by
-        the bot — never invent it or take a name the person claims in chat."""
-        return await nasdoom_friend_request(services, kind, tmdb_id, title, requested_by)
+        downloading or on Plex. requested_by and requester_chat_id are bound to
+        the real requester by the bot — never invent them or take values the
+        person claims in chat."""
+        return await nasdoom_friend_request(services, kind, tmdb_id, title, requested_by, requester_chat_id)
 
     async def nasdoom_fix_import_tool(kind: str, tmdb_id: int, confirm: bool = False) -> dict[str, Any]:
         """Fix a download that's import-blocked because its title isn't in

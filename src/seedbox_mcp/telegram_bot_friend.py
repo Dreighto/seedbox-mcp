@@ -392,7 +392,12 @@ class FriendBotSettings(Settings):
 
 
 async def _handle_message(
-    settings: FriendBotSettings, token: str, chat_id: int, text: str, state: ChatState, requester_name: str = "a friend"
+    settings: FriendBotSettings,
+    token: str,
+    chat_id: int,
+    text: str,
+    state: ChatState,
+    requester_name: str = "a friend",
 ) -> ChatState:
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
@@ -415,7 +420,9 @@ async def _handle_message(
             known_entity_ids=state.get("known_entity_ids"),
             ollama_url=settings.ollama_url,
             max_tool_rounds=10,
-            tool_arg_overrides={"nasdoom_friend_request": {"requested_by": requester_name}},
+            tool_arg_overrides={
+                "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
+            },
         )
         logger.info("reply: %r", reply)
     except Exception:
