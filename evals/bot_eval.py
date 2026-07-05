@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import time
 import logging
 import re
 from dataclasses import dataclass, field
@@ -346,6 +347,8 @@ async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--bot", choices=["ops", "friend"], required=True)
     parser.add_argument("--range", default=None, help="e.g. 1-8 (1-indexed, inclusive)")
+    parser.add_argument("--model", default=None, help="override the bot model (e.g. deepseek-v4-flash:cloud)")
+    parser.add_argument("--suffix", default="", help="results file suffix (e.g. _dsv4flash)")
     args = parser.parse_args()
 
     # Integrity: sandbox runs must never write the real audit ledger or trip
@@ -363,7 +366,7 @@ async def main() -> None:
     settings = Settings()  # type: ignore[call-arg]
     real = Client(f"http://{settings.mcp_host}:{settings.mcp_port}/mcp", auth=settings.mcp_bearer_token.get_secret_value())
 
-    out_path = Path(__file__).parent / f"results_{args.bot}.json"
+    out_path = Path(__file__).parent / f"results_{args.bot}{args.suffix}.json"
     existing: list[dict[str, Any]] = []
     if out_path.exists():
         try:
@@ -372,14 +375,23 @@ async def main() -> None:
             existing = []
     done_ids = {r["id"] for r in existing}
 
+    if args.model:
+        import seedbox_mcp.telegram_bot as _ob
+        import seedbox_mcp.telegram_bot_friend as _fb
+        _ob.BotSettings.ollama_bot_model = args.model  # type: ignore[assignment]
+        _ob.INVESTIGATE_MODEL = args.model
+        _fb.FriendBotSettings.ollama_friend_bot_model = args.model  # type: ignore[assignment]
+
     for sc in scenarios:
         if sc.id in done_ids:
             print(f"[skip] {sc.id} (already in results)")
             continue
         sandbox = SandboxClient(real)
+        t0 = time.monotonic()
         try:
             transcript = await (run_ops(sc, sandbox) if args.bot == "ops" else run_friend(sc, sandbox))
             result = grade(sc, transcript)
+            result["seconds"] = round(time.monotonic() - t0, 1)
         except Exception as exc:  # a crashed scenario is itself a finding
             logger.exception("scenario %s crashed", sc.id)
             result = {"id": sc.id, "verdict": "ERROR", "error": str(exc)[:300], "checks": [], "transcript": []}
