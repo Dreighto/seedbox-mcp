@@ -30,7 +30,7 @@ logger = logging.getLogger("seedbox_mcp.monitor")
 # unfixed. Nobody's waiting live on a background cycle the way they are on
 # an interactive reply, so correctness matters more than the few seconds of
 # latency difference — same tradeoff logic as digest.py's own model choice.
-DEFAULT_MONITOR_MODEL = "qwen3-coder:480b-cloud"
+DEFAULT_MONITOR_MODEL = "deepseek-v4-pro:cloud"
 
 # Deliberately the ORIGINAL Tier 1 set only — not everything ACTION_TOOLS now
 # covers. Operator's own call (2026-07-01): the monitor may act autonomously
@@ -68,6 +68,12 @@ MONITOR_READ_ONLY_TOOLS: set[str] = {
     "nasdoom_control",
     "nas_backup_health",
     "prowlarr_indexer_stats",
+    # the run-cycle task EXPLICITLY orders a disk check (verdicts computed in
+    # code, watch/replace_now always report-worthy) — it was missing from this
+    # set, so every model was told to call a tool it didn't have. qwen skipped
+    # it silently for days; V4-Pro honestly reported the mismatch (breaking the
+    # exact-match NO_ALERT sentinel), which is how this surfaced.
+    "nas_disk_health",
     "nasdoom_match_search",
     # so the LLM can see a container's actual state when deciding whether a
     # persistent (already-restarted) outage needs escalation.

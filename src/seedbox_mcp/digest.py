@@ -22,7 +22,7 @@ logger = logging.getLogger("seedbox_mcp.digest")
 # Cloud-tagged, flat-rate under the operator's Ollama Pro subscription — see
 # reference: smaller/faster models for latency-sensitive replies, bigger ones
 # for batch judgment calls where quality matters more than turnaround.
-DEFAULT_DIGEST_MODEL = "qwen3-coder:480b-cloud"
+DEFAULT_DIGEST_MODEL = "deepseek-v4-pro:cloud"
 
 SYSTEM_PROMPT = """\
 You are a NAS housekeeping assistant. You run on a schedule, not in a chat — \

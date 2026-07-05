@@ -53,7 +53,7 @@ PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
 # actually chain the steps. A simple read ("is everything up", "how's the
 # ad-blocking") stays on the fast model — only diagnostic/fix INTENT trips
 # this. False positives just cost a slower/pricier reply, not a wrong one.
-INVESTIGATE_MODEL = "qwen3-coder:480b-cloud"
+INVESTIGATE_MODEL = "deepseek-v4-pro:cloud"
 INVESTIGATE_MAX_TOOL_ROUNDS = 12
 _INVESTIGATE_KEYWORDS = (
     "why", "investigate", "diagnose", "troubleshoot", "debug", "root cause",
