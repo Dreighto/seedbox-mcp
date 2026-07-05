@@ -426,6 +426,40 @@ and saying a title is or is not on Plex without a jellyseerr_search this turn \
 is a false claim, do not do either. This "do it now with real tools, don't \
 just promise or guess from memory" rule applies to everything.
 
+Anime specifics (these come up a lot):
+- Seasons are often SEPARATE entries: many anime list each season or arc as \
+its own show ("Attack on Titan: Final Season", "Demon Slayer: Entertainment \
+District Arc") rather than seasons of one entry. When someone names a \
+specific season or arc, search for that exact season/arc by name too, not \
+just the base title, and show the poster of the specific entry you found so \
+they can confirm it's the right one before you request. A request grabs ALL \
+seasons of whichever entry it's for, so picking the right entry matters.
+- Movies vs series: franchises often have both (a "Demon Slayer" movie AND \
+the series). If it's ambiguous which they want, ask, showing the poster of \
+your best guess.
+- Dubs vs subs: you CANNOT reliably tell whether something is or will be \
+dubbed. If they ask about English dub, be honest: the server prefers \
+dual-audio (sub+dub) copies when they exist, but you can't promise one. \
+nasdoom_releases marks a release dual_audio=true only when its name says \
+so; null means UNKNOWN, not sub-only — never promise or deny a dub from a \
+null. Don't guess.
+- The owner keeps special curated versions of some big series, already on \
+Plex, and recommends them as the BETTER way to watch. These live in their \
+own Plex sections that your search CANNOT see — the owner has verified they \
+are on Plex, so you may (and must) state that WITHOUT a search; this is the \
+one standing exception to the "only claim on-Plex from a search" rule. ANY \
+TIME one of these franchises comes up — asking about it, asking to watch \
+it, or asking to add it — mention the curated version by name, even if a \
+standard version is also on Plex:
+  * One Piece → "One Pace" (a fan-recut that trims the filler and pacing; \
+the owner's recommended way to watch) and "One Piece Kai (Dub)" for dub \
+watchers. Never request the regular 1000+ episode series without first \
+telling them about One Pace and asking which they want.
+  * Naruto → "NARUTO KAI" (curated cut, on Plex).
+  * Berserk → "Berserk Redux" (curated fan edit, on Plex).
+If they still want the standard version after hearing about the curated \
+one, request it normally.
+
 Content safety, not optional: never search for, describe, or offer \
 anything sexually explicit or adult. If asked, just say "I can't help with \
 that one" and move on — no detail, no alternatives.
@@ -573,6 +607,19 @@ _PUNT_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Franchises with owner-curated Plex sections the bot must steer to (the
+# sections don't map to TMDB, so jellyseerr_search can't see them — the
+# steer has to come from here). Keys are matched as lowercase substrings.
+_CURATED_STEERS: dict[str, str] = {
+    "one piece": (
+        'Recommend "One Pace" (the owner\'s curated fan-recut that trims filler — his recommended '
+        'way to watch One Piece) and "One Piece Kai (Dub)" for dub watchers, BEFORE offering to '
+        "request the standard 1000+ episode series."
+    ),
+    "naruto": 'Recommend "NARUTO KAI" (the owner\'s curated cut, on Plex) before any standard-series request.',
+    "berserk": 'Recommend "Berserk Redux" (the owner\'s curated fan edit, on Plex) before any standard-series request.',
+}
+
 _PUNT_CONTINUATION = (
     "(system note, the person did not say this: your last reply promised to check/search/do "
     "something and then STOPPED. You cannot send another message later, so that promise sends "
@@ -603,6 +650,18 @@ async def _handle_message(
     # the model (which could be talked into a different name). The prompt line
     # is only so the model refers to them naturally; the tool arg is authoritative.
     system_prompt = f"{SYSTEM_PROMPT}\n\nThe person you are helping is {requester_name}."
+    # Deterministic curated-franchise nudge: the buried prompt rule loses to the
+    # "only claim on-Plex from a search" honesty rules (search can't see the
+    # curated sections), so when one of these franchises is named, put the
+    # instruction top-of-mind for THIS turn.
+    lowered_text = text.lower()
+    for franchise, steer in _CURATED_STEERS.items():
+        if franchise in lowered_text:
+            system_prompt += (
+                f"\n\nIMPORTANT for this message: they mentioned {franchise.title()}. {steer} "
+                "The owner has verified this is on Plex; say so even though your search can't see it."
+            )
+            break
     turn_kwargs: dict[str, Any] = dict(
         system_prompt=system_prompt,
         mcp_client=mcp_client,

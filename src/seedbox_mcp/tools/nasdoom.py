@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -282,6 +283,17 @@ def _is_theatrical_rip(title: str, quality: str) -> bool:
     return any(f" {m} " in hay for m in _THEATRICAL_RIP_MARKERS)
 
 
+# Release-name markers that indicate an English dub track is included —
+# scene convention for anime. Absence of a marker does NOT mean sub-only
+# (plenty of dual-audio releases don't say so), which is why the flag is
+# tri-state: True (marker present) or None (unknown), never a hard False.
+_DUAL_AUDIO_RE = re.compile(r"dual[ ._-]?audio|multi[ ._-]?audio|\bengdub\b|\benglish dub", re.IGNORECASE)
+
+
+def _dual_audio(title: str) -> bool | None:
+    return True if _DUAL_AUDIO_RE.search(title) else None
+
+
 async def nasdoom_releases(services: Services, kind: str, tmdb_id: int) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         if not services.nasdoom:
@@ -320,6 +332,9 @@ async def nasdoom_releases(services: Services, kind: str, tmdb_id: int) -> dict[
                     "size": r.get("sizeText") or r.get("size"),
                     "indexer": r.get("indexer"),
                     "theatrical_rip": _is_theatrical_rip(title, quality),
+                    # True = release name declares an English dub; None = unknown
+                    # (absence of a marker does NOT mean sub-only)
+                    "dual_audio": _dual_audio(title),
                 }
             )
         # "Standard quality" = any release that ISN'T a theatrical rip (a real
@@ -341,7 +356,9 @@ async def nasdoom_releases(services: Services, kind: str, tmdb_id: int) -> dict[
                 "note": "only_theatrical_rips=true means the sole options are camcorder/telesync/"
                 "screener rips (watchable but clearly below streaming quality) — warn the requester "
                 "before grabbing one. standard_quality_available=true means a proper (non-rip) copy "
-                "is listed; use the normal request for that, not a specific-release grab.",
+                "is listed; use the normal request for that, not a specific-release grab. dual_audio=true "
+                "means that release's name declares an English dub; dual_audio=null means unknown, "
+                "NOT sub-only — never promise or deny a dub from a null.",
             }
         )
 
