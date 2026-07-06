@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -16,9 +15,10 @@ from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
-from seedbox_mcp.telegram import send_message
+from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
+from seedbox_mcp.triage import FINDINGS_INSTRUCTION, Finding, fingerprint, parse_findings, render_triage, slugify
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -316,9 +316,33 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     return "\n".join(notes) if notes else None
 
 
-async def run_monitor_cycle(model: str | None = None) -> str | None:
-    """Returns the alert text, or None if the cycle found nothing worth
-    surfacing (the sentinel case) — None is the expected, common outcome."""
+def _notes_to_findings(*notes: str | None) -> list[Finding]:
+    """Each deterministic-fix note (queue resume, strike fix, service restart)
+    becomes an auto-fixed finding so it renders in the AUTO-FIXED group."""
+    out: list[Finding] = []
+    for note in notes:
+        if note and note.strip():
+            title = note.strip().split(".")[0][:80]
+            out.append(
+                Finding(
+                    id=slugify(title),
+                    severity="watch",
+                    title=title,
+                    real=True,
+                    reason=note.strip(),
+                    fixable_by="proven",
+                    auto_fixed=True,
+                )
+            )
+    return out
+
+
+async def run_monitor_cycle(model: str | None = None) -> list[Finding]:
+    """Runs one check cycle and returns the structured findings for it.
+    An empty list means a clean cycle (nothing actionable) — the expected,
+    common outcome. Deterministic-fix notes (queue resume, strike fix,
+    service restart) are always folded in as auto-fixed findings, even on an
+    otherwise-clean cycle."""
     settings = MonitorSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
 
@@ -363,7 +387,7 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         "— escalate_to_worker with what you see."
     )
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task,
+        task + "\n\n" + FINDINGS_INSTRUCTION,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_monitor_model,
@@ -379,12 +403,11 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         # retries before reaching every check.
         max_tool_rounds=20,
     )
-    llm_alert = None if text.strip() == NO_ALERT_SENTINEL else text
     # Deterministic-fix notes always surface (they describe real actions
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
-    parts = [p for p in (queue_fix_note, strike_note, recovery_note, llm_alert) if p]
-    return "\n\n".join(parts) if parts else None
+    llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
+    return _notes_to_findings(queue_fix_note, strike_note, recovery_note) + llm_findings
 
 
 # Alert-dedup state: the fingerprint of the last alert we actually pushed,
@@ -437,42 +460,40 @@ def main() -> None:
     parser.add_argument("--force-alert-test", action="store_true", help="Skip the sentinel check, always push.")
     args = parser.parse_args()
 
-    result = asyncio.run(run_monitor_cycle(args.model))
-    if result is None:
-        print(f"[{NO_ALERT_SENTINEL}] nothing to report this cycle")
+    findings = asyncio.run(run_monitor_cycle(args.model))
+    fp = fingerprint(findings)
+    if fp is None and not args.force_alert_test:
+        print(f"[{NO_ALERT_SENTINEL}] nothing actionable this cycle")
         # Nothing active — clear the dedup state so a later recurrence of the
         # same issue alerts fresh instead of being suppressed as a duplicate.
         _save_alert_state({})
-        if not args.force_alert_test:
-            return
-        result = "(--force-alert-test) monitor cycle completed with no alert-worthy findings."
-    else:
-        print(result)
+        return
 
     # Alert-once-then-quiet: don't re-push an identical unresolved alert every
     # cycle. --force-alert-test bypasses the dedup (it's a manual test).
-    if not args.force_alert_test:
-        fingerprint = hashlib.sha256(result.encode()).hexdigest()
-        should_push, new_state = _alert_decision(fingerprint, _load_alert_state(), time.time())
-        # Keep the alert TEXT alongside the dedup hash: the interactive bot
-        # injects the active alert into its context, so when the operator
-        # replies "investigate and fix it" the bot knows what "it" is (the
-        # alert was pushed by THIS process — it's not in the bot's own chat
-        # history). Cleared with the rest of the state on the all-clear path.
-        new_state["text"] = result
-        _save_alert_state(new_state)
-        if not should_push:
-            print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
-            return
+    should_push, new_state = _alert_decision(fp, _load_alert_state(), time.time())
+    text, _markup = render_triage(findings)
+    # Keep the rendered report TEXT alongside the dedup hash: the interactive
+    # bot injects the active alert into its context, so when the operator
+    # replies "investigate and fix it" the bot knows what "it" is (the alert
+    # was pushed by THIS process — it's not in the bot's own chat history).
+    # Cleared with the rest of the state on the all-clear path.
+    new_state["text"] = text
+    _save_alert_state(new_state)
+    print(text)
+
+    if not should_push and not args.force_alert_test:
+        print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
+        return
 
     if not args.no_telegram:
         settings = MonitorSettings()  # type: ignore[call-arg]
         if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
             asyncio.run(
-                send_message(
+                send_message_html(
                     settings.nas_ops_telegram_bot_token.get_secret_value(),
                     settings.nas_ops_telegram_allowed_chat_id,
-                    f"🔔 {result}",
+                    text,
                 )
             )
         else:
