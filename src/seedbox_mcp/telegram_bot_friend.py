@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
+from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
 from seedbox_mcp.config import Settings
 from seedbox_mcp.telegram import TELEGRAM_API, format_for_telegram, send_message
@@ -237,11 +238,6 @@ async def _edit_message_text(token: str, chat_id: int, message_id: int, text: st
             f"{TELEGRAM_API}/bot{token}/editMessageText",
             json={"chat_id": chat_id, "message_id": message_id, "text": text},
         )
-
-
-class ChatState(dict[str, Any]):
-    """Same shape as telegram_bot.py's ChatState — {"history": [...],
-    "pending_action": {...} | None, "known_entity_ids": {...}}."""
 
 
 def _load_chat_states() -> dict[int, ChatState]:
@@ -500,16 +496,6 @@ message the owner directly. Just tell me what you're looking for.
 """
 
 
-async def _set_bot_commands(token: str) -> None:
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.post(
-            f"{TELEGRAM_API}/bot{token}/setMyCommands",
-            json={"commands": [{"command": "help", "description": "What can you do?"}]},
-        )
-    if resp.is_error:
-        logger.warning("setMyCommands failed (non-fatal): %s %s", resp.status_code, resp.text)
-
-
 class FriendBotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
     ollama_friend_bot_model: str = DEFAULT_FRIEND_BOT_MODEL
@@ -517,16 +503,6 @@ class FriendBotSettings(Settings):
     @property
     def mcp_url(self) -> str:
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
-
-
-async def _download_telegram_photo(token: str, file_id: str) -> bytes:
-    async with httpx.AsyncClient(timeout=20.0) as http:
-        resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})
-        resp.raise_for_status()
-        file_path = resp.json()["result"]["file_path"]
-        resp = await http.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
-        resp.raise_for_status()
-        return resp.content
 
 
 async def _handle_photo_message(

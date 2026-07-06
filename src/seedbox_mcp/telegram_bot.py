@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
+from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
 from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
@@ -105,12 +106,6 @@ POLL_TIMEOUT_S = 30
 # means an in-flight confirm/id-reference fails closed and needs a fresh
 # preview/lookup — an ok-either-way default rather than a real problem.
 HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_history.json"
-
-
-class ChatState(dict[str, Any]):
-    """{"history": list[dict], "pending_action": dict | None,
-    "known_entity_ids": dict[str, list[int]]} — a thin alias so callers
-    don't have to spell out the shape every time."""
 
 
 def _load_chat_states() -> dict[int, ChatState]:
@@ -637,19 +632,6 @@ right now.
 """
 
 
-async def _set_bot_commands(token: str) -> None:
-    """Registers the /help command with Telegram so it shows in the client's
-    command menu — best-effort, a failure here doesn't stop the bot from
-    working, it just means the menu entry won't appear."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.post(
-            f"{TELEGRAM_API}/bot{token}/setMyCommands",
-            json={"commands": [{"command": "help", "description": "What can you do?"}]},
-        )
-    if resp.is_error:
-        logger.warning("setMyCommands failed (non-fatal): %s %s", resp.status_code, resp.text)
-
-
 class BotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
     ollama_bot_model: str = DEFAULT_BOT_MODEL
@@ -807,16 +789,6 @@ async def _handle_message(
         known_entity_ids=new_known_entity_ids,
         active_sections=sorted(active_sections),
     )
-
-
-async def _download_telegram_photo(token: str, file_id: str) -> bytes:
-    async with httpx.AsyncClient(timeout=20.0) as http:
-        resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})
-        resp.raise_for_status()
-        file_path = resp.json()["result"]["file_path"]
-        resp = await http.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
-        resp.raise_for_status()
-        return resp.content
 
 
 async def _handle_photo_message(
