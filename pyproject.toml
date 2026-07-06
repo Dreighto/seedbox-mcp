@@ -21,7 +21,6 @@ dependencies = [
 
 [project.scripts]
 seedbox-mcp = "seedbox_mcp.server:main"
-seedbox-chat = "seedbox_mcp.chat.server:main"
 seedbox-digest = "seedbox_mcp.digest:main"
 seedbox-telegram-bot = "seedbox_mcp.telegram_bot:main"
 seedbox-telegram-friend-bot = "seedbox_mcp.telegram_bot_friend:main"

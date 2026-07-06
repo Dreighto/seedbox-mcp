@@ -12,7 +12,6 @@ from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
     ESCALATION_TOOLS,
-    READ_ONLY_TOOLS,
     run_agent_turn,
 )
 from seedbox_mcp.config import Settings
@@ -117,6 +116,30 @@ class DigestSettings(Settings):
 # for the operator to fix interactively, it can't run the fix itself.
 DIGEST_ACTION_TOOLS = ACTION_TOOLS - {"nasdoom_fix_import"}
 
+# Context-bloat control, same rationale as monitor.MONITOR_READ_ONLY_TOOLS:
+# the digest runs once a day with a FIXED job (DEFAULT_TASK below plus the
+# SYSTEM_PROMPT's Tier 1 action-tool preambles), so it declares exactly the
+# read tools that job needs rather than inheriting the whole READ_ONLY_TOOLS
+# set. Inheriting the global set carried ~67 tool schemas (~11k tokens) on
+# deepseek-v4-pro every run while DEFAULT_TASK calls 9 of them — this list
+# decouples the digest from READ_ONLY_TOOLS' growth: a new read tool only
+# reaches the digest if it's added HERE on purpose. Each entry is either
+# called directly by DEFAULT_TASK, or is the read-side preview a Tier 1
+# action tool needs (nasdoom_match_search -> nasdoom_match_apply, per
+# SYSTEM_PROMPT's "Tier 1 action tools" section).
+DIGEST_READ_ONLY_TOOLS: set[str] = {
+    "fleet_health",
+    "staleness_report",
+    "nasdoom_health",
+    "nasdoom_queue",
+    "nasdoom_requests_overview",
+    "nasdoom_control",
+    "nas_backup_health",
+    "nas_storage_inventory",
+    "nas_import_diagnosis",
+    "nasdoom_match_search",
+}
+
 
 async def run_digest(task: str, model: str | None = None) -> str:
     settings = DigestSettings()  # type: ignore[call-arg]
@@ -128,7 +151,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
-        allowed_tools=READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS | ESCALATION_TOOLS,
+        allowed_tools=DIGEST_READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS | ESCALATION_TOOLS,
         action_tools=DIGEST_ACTION_TOOLS,
         ollama_url=settings.ollama_url,
     )

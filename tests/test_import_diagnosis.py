@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from seedbox_mcp.import_diagnosis import _arr_reason, _parse_mounts, translate_to_host
+import base64
+import subprocess
+
+import pytest
+
+from seedbox_mcp import import_diagnosis
+from seedbox_mcp.import_diagnosis import _arr_reason, _diagnose_item, _parse_mounts, translate_to_host
+from seedbox_mcp.runtime import Services
 
 
 def test_arr_reason_pulls_the_real_message_from_status_messages() -> None:
@@ -61,3 +68,44 @@ def test_translate_returns_none_for_unmapped_path() -> None:
 def test_exact_mount_root_translates() -> None:
     mounts = _parse_mounts(_RADARR_RAW)
     assert translate_to_host("/movies", mounts) == "/mnt/pool/Movies"
+
+
+@pytest.mark.asyncio
+async def test_diagnose_item_probe_command_is_syntactically_valid_shell(
+    monkeypatch: pytest.MonkeyPatch, services: Services
+) -> None:
+    """Regression for the "sh: syntax error: unexpected \"if\"" bug: the
+    in-container probe must (a) be delivered via base64 so nested SSH/shell
+    quoting can't mangle it, and (b) join its per-mount if/fi blocks with
+    ';' — a bare space between two "if ... fi" blocks is itself a shell
+    syntax error, independent of the quoting bug.
+    """
+    captured: dict[str, str] = {}
+
+    async def fake_run_on_nas(_services: object, command: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        captured["command"] = command
+        return 0, "READ_OK\nPARENT_WRITE_OK\nLIBOK /movies\nLIBOK /anime-movies", ""
+
+    monkeypatch.setattr(import_diagnosis, "_run_on_nas", fake_run_on_nas)
+
+    item = {
+        "outputPath": "/downloads/complete/Some.Movie.2024/movie.mkv",
+        "movie": {"title": "Some Movie"},
+        "errorMessage": "",
+        "statusMessages": [],
+    }
+    result = await _diagnose_item(services, "radarr", item)
+
+    assert result["diagnosis"] == "no_permission_or_path_issue_found"
+    command = captured["command"]
+    assert "base64 -d | sh" in command
+
+    # Pull the base64 payload back out and confirm it decodes to a script
+    # that a real POSIX shell accepts (syntax-check only, `sh -n`, no
+    # execution) — this is exactly the check that used to fail with
+    # "unexpected \"if\"".
+    b64_payload = command.split("echo ", 1)[1].split(" | base64", 1)[0]
+    script = base64.b64decode(b64_payload).decode()
+    assert "fi if" not in script  # the missing-semicolon bug, reintroduced
+    check = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
+    assert check.returncode == 0, check.stderr

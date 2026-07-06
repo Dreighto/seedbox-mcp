@@ -17,6 +17,7 @@ from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
+from seedbox_mcp.schemas import CoercedInt
 from seedbox_mcp.tools.adguard import adguard_protection, adguard_stats
 from seedbox_mcp.tools.downloads import (
     jellyseerr_overview,
@@ -194,18 +195,16 @@ def create_mcp(services: Services) -> FastMCP:
     ) -> dict[str, Any]:
         """Returns Sonarr library state.
 
-        Use include_queue=true to retrieve queue_id values needed by sonarr_queue_action.
-        Each queue item also carries sonarr_id (for sonarr_research_series) plus a clean
-        title and the raw release_title — act on these directly rather than feeding the
-        release name back through media_search.
-        Set include_series=false or include_missing=false to reduce response size when
-        only queue data is needed.
+        include_queue=true returns queue_id (for sonarr_queue_action) and sonarr_id
+        (for sonarr_research_series) per item. Act on these directly; do not feed
+        release_title back through media_search.
+        include_series=false / include_missing=false shrinks the response when only
+        queue data is needed.
 
-        Set include_seasons=true to get a per-season breakdown for each series: which
-        seasons exist, whether each is monitored, and how many episodes are on disk. This
-        is how to answer "what seasons of <show> do we have". Pair with media_search to
-        find the show's sonarr_id, then match it in this list. Feed a season_number into
-        sonarr_monitor_season to start collecting a season that isn't on disk yet.
+        include_seasons=true adds a per-season breakdown (exists, monitored, episode
+        count), the way to answer "what seasons of <show> do we have". Get sonarr_id
+        from media_search, match it here, then feed a missing season_number into
+        sonarr_monitor_season.
         """
         return await sonarr_overview(services, include_series, include_queue, include_missing, include_seasons, limit)
 
@@ -240,43 +239,35 @@ def create_mcp(services: Services) -> FastMCP:
         year: int | None = None,
         country: str | None = None,
     ) -> dict[str, Any]:
-        """Search for movies, TV series, or Plex items ONLY. Returns tmdb_id/tvdb_id for use
-        with add tools. For music (albums, sample packs, artists) do NOT use this tool at all,
-        including the genre filter — there is no music catalog here. Use nasdoom_find(scope='music')
-        instead.
+        """Search for movies, TV series, or Plex items ONLY. Returns tmdb_id/tvdb_id
+        for use with add tools. For music (albums, sample packs, artists) do NOT use
+        this tool; use nasdoom_find(scope='music') instead.
 
-        Either query or at least one attribute filter must be provided. They can be combined.
+        Provide query and/or at least one attribute filter.
 
-        types values (list): movie, series, plex. Defaults to all three.
-          Narrow types to reduce noise: use ["movie"] for Radarr operations, ["series"] for
-          Sonarr operations, ["plex"] for Plex-only queries.
+        types (list): movie, series, plex. Defaults to all three; narrow to reduce
+        noise (["movie"] for Radarr, ["series"] for Sonarr, ["plex"] for Plex-only).
 
-        include_external_lookup: set to false when locating an existing item for delete, research,
-          or queue operations — those workflows only need items already in Radarr/Sonarr.
-          External lookup is only needed when adding new content not yet in the library.
+        include_external_lookup: set false when locating an existing item for
+        delete/research/queue ops (library-only lookup). Leave true only when adding
+        new content not yet in the library.
 
         Attribute filters:
-          director, actor, country — matched via Plex only (Radarr/Sonarr lack these fields).
-            When any of these are set, Plex is searched automatically even if not in types.
-            Plex requires the full name exactly (e.g. "Akira Kurosawa", not "Kurosawa").
-            The existing Radarr/Sonarr library is suppressed when one of these is set (it
-            can't filter on crew), but external lookup still runs on the query — those
-            results are NOT crew-filtered, and a warning says so. Combine a title query
-            with a crew filter to keep getting addable candidates.
-          year — matched via every source, including external lookup (use it to pin down
-            the right release when adding, e.g. query="Air Force One", year=1997).
-          genre, language — matched via the existing Radarr/Sonarr library and Plex, but
-            NOT applied to external lookup results.
-            language matches originalLanguage in Radarr and audioLanguage in Plex (e.g. "Japanese").
-            genre is a substring match (e.g. "Drama" matches "Drama", "Drama/Thriller").
+          director, actor, country: Plex only (Radarr/Sonarr lack these fields); use
+            the full name exactly (e.g. "Akira Kurosawa"). Setting one of these
+            suppresses the Radarr/Sonarr library match (it can't filter on crew) and
+            forces Plex into types; external lookup still runs on query but is NOT
+            crew-filtered (flagged in the result), so combine with a title query to
+            keep addable candidates.
+          year: matched everywhere including external lookup (pin a release, e.g.
+            query="Air Force One", year=1997).
+          genre, language: matched via the library + Plex only, not external lookup.
+            language checks originalLanguage/audioLanguage (e.g. "Japanese"); genre
+            is a substring match.
 
-        A query always drives external lookup (when include_external_lookup is true);
-        attribute filters refine results, they no longer disable it.
-
-        Each candidate includes match_type and safe_for_action. Act automatically on candidates only
-        where safe_for_action is true (exact title match, plus year match if a year was supplied in
-        the query). For everything else, present candidates to the user and ask for disambiguation
-        before any destructive call.
+        Each candidate has match_type and safe_for_action. Only act automatically
+        when safe_for_action is true (exact title, plus year if supplied); otherwise
+        present candidates and ask before any destructive call.
         """
         return await media_search(
             services,
@@ -407,23 +398,21 @@ def create_mcp(services: Services) -> FastMCP:
         search_now: bool = True,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """Start collecting one season of a series already in Sonarr, then search for it.
+        """Start collecting one season of a series already in Sonarr, then search it.
 
-        Use this for "add season N of <show>" when the show already exists in Sonarr but
-        that season isn't on disk. Get sonarr_id from media_search, and confirm the season
-        is missing via sonarr_overview(include_seasons=true). If the show is NOT in Sonarr
-        yet, call sonarr_add_series first (monitor=none), then this.
+        Use for "add season N of <show>" when the show exists in Sonarr but that
+        season isn't on disk. Get sonarr_id from media_search; confirm the season is
+        missing via sonarr_overview(include_seasons=true). If not in Sonarr yet, call
+        sonarr_add_series first (monitor=none), then this.
 
-        It marks the season monitored (and the series, which Sonarr requires) and, when
-        search_now=true, triggers an indexer search for that season's episodes.
-
-        confirm: false (default) is a dry run returning a would_monitor preview with no
-          upstream change. Show it, then call again with confirm=true once the user agrees.
+        Marks the season (and series) monitored; search_now=true also searches
+        indexers for that season's episodes. confirm=false (default) previews via
+        would_monitor, no upstream change; confirm=true executes.
         """
         return await sonarr_monitor_season(services, sonarr_id, season_number, search_now, confirm)
 
     async def radarr_queue_action_tool(
-        queue_id: int,
+        queue_id: CoercedInt,
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -437,7 +426,7 @@ def create_mcp(services: Services) -> FastMCP:
         return await radarr_queue_action(services, queue_id, action, confirm)
 
     async def sonarr_queue_action_tool(
-        queue_id: int,
+        queue_id: CoercedInt,
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -542,15 +531,14 @@ def create_mcp(services: Services) -> FastMCP:
     ) -> dict[str, Any]:
         """Remove a single series from Sonarr. For multiple, use sonarr_delete_series_batch.
 
-        Identify sonarr_id via media_search with include_external_lookup=false and act only on
+        Get sonarr_id via media_search(include_external_lookup=false); act only on
         candidates where safe_for_action is true.
 
-        delete_files: false removes the series from Sonarr management but leaves files on disk.
-          Typically the files themselves should be deleted on a delete request.
-        add_import_exclusion: prevents Sonarr from re-importing or re-monitoring this series
-          after a future library scan. Set to true when you do not want it re-added automatically.
-        confirm: false (default) is a strict dry run — returns a preview including size_on_disk_gb
-          and performs no upstream call. Set to true to execute the deletion.
+        delete_files=false keeps files on disk, only unmanages the series in Sonarr;
+        usually leave true on a delete request. add_import_exclusion=true stops
+        Sonarr from re-adding it on a future library scan.
+        confirm=false (default) is a dry run returning a preview with
+        size_on_disk_gb, no upstream call. confirm=true executes.
         """
         return await sonarr_delete_series(services, sonarr_id, delete_files, add_import_exclusion, confirm)
 
@@ -562,17 +550,17 @@ def create_mcp(services: Services) -> FastMCP:
     ) -> dict[str, Any]:
         """Remove multiple series from Sonarr in one call.
 
-        Each id must be the Sonarr internal id (not tvdb_id). Resolve ids via media_search with
-        include_external_lookup=false and act only on candidates where safe_for_action is true.
+        ids must be Sonarr internal ids (not tvdb_id); resolve via
+        media_search(include_external_lookup=false), acting only where
+        safe_for_action is true.
 
-        confirm=false returns a dry-run preview: per-item rows under would_delete, any unknown ids
-        under not_found, and a summary including estimated_size_gb.
-        confirm=true executes deletions sequentially. Failures do not stop the run; each is collected
-        under failed[] alongside its error_type, and the summary reports total_size_deleted_gb for
-        successful items only.
+        confirm=false previews: would_delete rows, unknown ids under not_found,
+        summary with estimated_size_gb. confirm=true executes sequentially;
+        failures land in failed[] with error_type without stopping the run, and
+        summary reports total_size_deleted_gb for successes.
 
-        delete_files / add_import_exclusion apply to every selected item — see sonarr_delete_series
-        for semantics.
+        delete_files / add_import_exclusion apply to every item; see
+        sonarr_delete_series for semantics.
         """
         return await sonarr_delete_series_batch(services, sonarr_ids, delete_files, add_import_exclusion, confirm)
 
@@ -587,24 +575,18 @@ def create_mcp(services: Services) -> FastMCP:
     ) -> dict[str, Any]:
         """Lists items that have not been watched for a while.
 
-        media_type values: all, movies, tv.
+        media_type: all, movies, tv.
 
-        Buckets (when include_unwatched=true):
-          added_long_ago_unwatched — view_count is zero AND last_viewed_at is null AND
-                                     added_at is older than older_than_days.
-          watched_long_ago         — last_viewed_at is older than older_than_days
-                                     (regardless of when the item was added).
+        Buckets (include_unwatched=true):
+          added_long_ago_unwatched: zero views, never viewed, added before older_than_days.
+          watched_long_ago: last viewed before older_than_days, regardless of add date.
 
-        Each item in those buckets includes radarr_id or sonarr_id (joined by exact
-        title+year against the Radarr/Sonarr libraries) and match_status. Items with
-        match_status="unmanaged" can be deleted via Plex only, not Radarr/Sonarr.
+        Each item carries radarr_id/sonarr_id (joined by title+year) and match_status;
+        match_status="unmanaged" means delete via Plex only, not Radarr/Sonarr.
 
-        sort values:
-          staleness_desc (default) — oldest most-recent-activity first (sorted by
-            max(added_at, last_viewed_at) ascending). Items with neither timestamp sort last.
-          size_desc — largest size_on_disk_gb first, nulls last.
-          title_asc — alphabetical.
-        limit is applied after sort.
+        sort: staleness_desc (default, oldest activity first, no-timestamp items
+        last), size_desc (largest size_on_disk_gb first), title_asc. limit applies
+        after sort.
         """
         return await staleness_report(
             services,
@@ -642,19 +624,15 @@ def create_mcp(services: Services) -> FastMCP:
         return await tautulli_users(services)
 
     async def plex_now_playing_tool() -> dict[str, Any]:
-        """Who is watching RIGHT NOW — live Plex streams read straight from
-        Plex's own /status/sessions (authoritative; do NOT rely on Tautulli
-        for this). Returns stream_count, and per stream: user, title,
-        local (LAN) vs remote (WAN), direct-play vs transcode, per-stream
-        bandwidth, source resolution, and transcode throttle/speed. Also
-        returns bottleneck_flags computed in code (concurrent transcodes,
-        throttled transcodes, remote streams, high total bandwidth) — the
-        answer to "who's watching and is the server struggling". This is
-        the real answer to "how many people are watching" / "who's
-        streaming"; never answer that from request counts
-        (jellyseerr_overview/nasdoom_requests_overview), which count
-        requested titles, not viewers. An empty now_playing list means
-        nobody is streaming."""
+        """Who is watching RIGHT NOW: live Plex streams from /status/sessions
+        (authoritative; do NOT use Tautulli for this). Returns stream_count and per
+        stream: user, title, local/remote, direct-play/transcode, bandwidth,
+        resolution, throttle/speed, plus bottleneck_flags (concurrent/throttled
+        transcodes, remote streams, high bandwidth), the answer to "is the server
+        struggling". This is the real answer to "how many people are watching";
+        never answer that from request counts (jellyseerr_overview /
+        nasdoom_requests_overview), which count requested titles, not viewers. Empty
+        now_playing means nobody is streaming."""
         return await plex_now_playing(services)
 
     async def tautulli_user_stats_tool(
@@ -1004,28 +982,22 @@ def create_mcp(services: Services) -> FastMCP:
         search_now: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
-        """Add a movie or series to Radarr/Sonarr. kind: 'movie'|'tv'. Get
-        tmdb_id (movies) or tmdb_id/tvdb_id (tv) from media_search or
-        nasdoom_omni_search first — never recall or construct an id yourself.
+        """Add a movie or series to Radarr/Sonarr. kind: 'movie'|'tv'. Get tmdb_id
+        (movies) or tmdb_id/tvdb_id (tv) from media_search or nasdoom_omni_search
+        first; never construct an id.
 
-        Leave quality_profile_id and root_folder_path unset unless the
-        operator specifically asked for a particular one — NASDOOM
-        automatically routes anime to the anime folder/profile (detected via
-        TMDB genre+origin-language) and everything else to the regular
-        library's configured default, which is correct far more often than
-        any single hardcoded default would be. Only pass these explicitly
-        when the operator names a specific quality or location.
+        Leave quality_profile_id and root_folder_path unset unless the operator
+        names a specific one. NASDOOM auto-routes anime to the anime folder/profile
+        (via TMDB genre+origin-language), everything else to the regular default,
+        which beats any hardcoded choice.
 
-        search_now defaults to false — adding monitors the title without
-        triggering an immediate download search, matching how the operator's
-        own Jellyseerr-driven flow behaves. Only set true if the operator
-        asks to grab it now, not just add/track it.
+        search_now defaults to false (monitor only, no immediate search); set true
+        only if the operator asks to grab it now.
 
-        Two-step: confirm=false (default) previews what would be sent —
-        quality_profile_id/root_folder_path showing as omitted in the
-        preview means "NASDOOM will pick automatically", not an error.
-        confirm=true executes. Returns error=already_managed with the
-        existing arrId if it's already in the library — don't re-add."""
+        Two-step: confirm=false (default) previews the request (omitted
+        quality_profile_id/root_folder_path means "auto-picked", not an error).
+        confirm=true executes. Returns error=already_managed with the existing arrId
+        if already in the library; don't re-add."""
         return await nasdoom_add(
             services, kind, tmdb_id, tvdb_id, quality_profile_id, root_folder_path, monitored, search_now, confirm
         )

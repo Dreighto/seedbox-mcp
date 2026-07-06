@@ -1,10 +1,30 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from seedbox_mcp.errors import MediaMcpError
+
+
+def _coerce_int(v: Any) -> int:
+    """Coerce an int-like value to int, tolerating float and numeric-string
+    inputs (including scientific notation, e.g. "5.01491855e+08") — models
+    sometimes echo a large ID back as a float-rendered string."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v
+    if isinstance(v, float):
+        return int(round(v))
+    if isinstance(v, str):
+        s = v.strip()
+        try:
+            return int(round(float(s)))
+        except ValueError as exc:
+            raise ValueError(f"Not a valid integer: {v!r}") from exc
+    raise ValueError(f"Not a valid integer: {v!r}")
+
+
+CoercedInt = Annotated[int, BeforeValidator(_coerce_int)]
 
 
 class ApiError(BaseModel):
