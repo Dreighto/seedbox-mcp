@@ -98,7 +98,10 @@ class FakePlexClient:
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:  # type: ignore[no-untyped-def]
+    # Hermetic: do NOT load the developer's real .env (it carries deployment
+    # overrides like PLEX_VERIFY_TLS=false that would pollute default-value tests).
     return Settings(
+        _env_file=None,
         mcp_bearer_token=SecretStr("dev"),
         radarr_url="http://radarr.local",
         radarr_api_key=SecretStr("radarr-key"),
