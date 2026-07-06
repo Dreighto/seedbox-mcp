@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 
@@ -134,7 +135,10 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
     # container — this is the exact context the import runs in, so the answer
     # isn't inferred from perm bits, it's the actual can-it-touch-the-file
     # result. -u 1000 matches the PUID the media stack runs as (verified).
-    lib_checks = " ".join(
+    # NOTE: joined with "; " — these are separate compound commands, and a
+    # bare space between two "if ... fi" blocks is a shell syntax error
+    # ("fi if" isn't a valid command separator; only ';'/newline is).
+    lib_checks = "; ".join(
         f'if [ -d "{m}" ]; then test -w "{m}" && echo "LIBOK {m}" || echo "LIBNOWRITE {m}"; fi'
         for m in meta["library_mounts"]
     )
@@ -146,7 +150,17 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
         f'test -w "$PARENT" && echo "PARENT_WRITE_OK" || echo "PARENT_WRITE_DENIED"; '
         f"fi; {lib_checks}"
     )
-    rc, out, err = await _run_on_nas(services, f"docker exec -u 1000:1000 {container} sh -c '{script}'")
+    # Deliver the script as base64 rather than embedding it in nested shell
+    # quotes: _run_on_nas already runs this command through one shell layer
+    # (the remote login shell over SSH), and that outer shell would re-parse
+    # any quoting we put around the inner `sh -c '...'`, mangling it before
+    # docker exec's sh ever sees it. Base64 has no shell metacharacters, so
+    # it survives the round trip intact regardless of the script's own
+    # quoting or whitespace.
+    script_b64 = base64.b64encode(script.encode()).decode()
+    rc, out, err = await _run_on_nas(
+        services, f'docker exec -u 1000:1000 {container} sh -c "echo {script_b64} | base64 -d | sh"'
+    )
     if rc != 0:
         result["diagnosis"] = "check_failed"
         result["explanation"] = f"Couldn't run the access check in the {container} container."
