@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
+from html import escape
 
 SEVERITIES = ("needs_fix", "watch", "healthy")
 FIXABLE_BY = ("proven", "tap", "agent", "none")
@@ -109,3 +111,55 @@ def parse_findings(text: str) -> list[Finding]:
             )
         )
     return findings or _fallback(text)
+
+
+_ACTIONABLE = ("needs_fix", "watch")
+_GROUP_LABELS = {"needs_fix": "NEEDS FIX", "watch": "WATCH"}
+
+
+def fingerprint(findings: list[Finding]) -> str | None:
+    keys = sorted(
+        f"{f.severity}:{f.title}"
+        for f in findings
+        if f.severity in _ACTIONABLE and not f.auto_fixed
+    )
+    if not keys:
+        return None
+    return hashlib.sha256("\n".join(keys).encode()).hexdigest()
+
+
+def _render_finding(f: Finding) -> str:
+    lines = [f"- {escape(f.title)}"]
+    detail = f.reason
+    if f.recommendation:
+        detail = f"{detail} recommend: {f.recommendation}" if detail else f"recommend: {f.recommendation}"
+    if detail:
+        lines.append(f"  {escape(detail)}")
+    if f.evidence:
+        lines.append(f"  <code>{escape(f.evidence)}</code>")
+    return "\n".join(lines)
+
+
+def render_triage(findings: list[Finding], *, interactive: bool = False) -> tuple[str, dict | None]:
+    active = [f for f in findings if not f.auto_fixed]
+    auto = [f for f in findings if f.auto_fixed]
+    attention = [f for f in active if f.severity in _ACTIONABLE]
+
+    header = f"NAS OPS, {len(attention)} need attention" if attention else "NAS OPS, all healthy"
+    blocks = [f"<b>{escape(header)}</b>"]
+
+    for sev in _ACTIONABLE:
+        group = [f for f in active if f.severity == sev]
+        if group:
+            blocks.append(f"<b>{_GROUP_LABELS[sev]} ({len(group)})</b>\n" + "\n".join(_render_finding(f) for f in group))
+
+    if auto:
+        body = "\n".join(f"- {escape(f.title)}: {escape(f.reason)}" for f in auto)
+        blocks.append(f"<b>AUTO-FIXED THIS CYCLE ({len(auto)})</b>\n" + body)
+
+    healthy = [f for f in active if f.severity == "healthy"]
+    if healthy:
+        names = ", ".join(escape(f.title) for f in healthy)
+        blocks.append(f"<b>HEALTHY ({len(healthy)})</b>: {names}")
+
+    return "\n\n".join(blocks), None

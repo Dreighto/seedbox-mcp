@@ -1,4 +1,4 @@
-from seedbox_mcp.triage import Finding, parse_findings, slugify
+from seedbox_mcp.triage import Finding, parse_findings, slugify, render_triage, fingerprint
 
 
 def test_slugify_basic():
@@ -50,3 +50,51 @@ def test_parse_findings_drops_invalid_items_keeps_valid():
     text = '[{"severity":"bogus","title":"x","real":true,"reason":"y"},{"severity":"watch","title":"Good","real":false,"reason":"z"}]'
     findings = parse_findings(text)
     assert [f.title for f in findings] == ["Good"]
+
+
+def _f(**kw):
+    base = dict(id="x", severity="healthy", title="t", real=True, reason="r")
+    base.update(kw)
+    return Finding(**base)
+
+
+def test_render_groups_and_counts():
+    findings = [
+        _f(id="a", severity="needs_fix", title="Import stuck", recommendation="fix_import", evidence="tmdb 1"),
+        _f(id="b", severity="watch", title="2 requests waiting"),
+        _f(id="c", severity="healthy", title="Disks"),
+        _f(id="d", severity="healthy", title="Fleet"),
+        _f(id="e", severity="watch", title="Queue resumed", auto_fixed=True),
+    ]
+    text, markup = render_triage(findings)
+    assert markup is None
+    assert "2 need attention" in text
+    assert "NEEDS FIX (1)" in text
+    assert "WATCH (1)" in text
+    assert "AUTO-FIXED THIS CYCLE (1)" in text
+    assert "HEALTHY (2)" in text
+    assert "Import stuck" in text
+    assert "tmdb 1" in text
+
+
+def test_render_escapes_html():
+    text, _ = render_triage([_f(severity="needs_fix", title="A <b> & <i>", real=True, reason="x")])
+    assert "<b>" not in text.replace("<b>", "")  # raw tag from title must be escaped
+    assert "&lt;b&gt;" in text or "&amp;" in text
+
+
+def test_render_all_healthy_has_no_attention_header():
+    text, _ = render_triage([_f(severity="healthy", title="Disks")])
+    assert "need attention" not in text
+    assert "HEALTHY (1)" in text
+
+
+def test_fingerprint_actionable_only_and_order_independent():
+    a = [_f(id="1", severity="needs_fix", title="B"), _f(id="2", severity="watch", title="A")]
+    b = [_f(id="9", severity="watch", title="A"), _f(id="8", severity="needs_fix", title="B")]
+    assert fingerprint(a) == fingerprint(b)
+
+
+def test_fingerprint_none_when_only_healthy_or_autofixed():
+    assert fingerprint([_f(severity="healthy", title="Disks")]) is None
+    assert fingerprint([_f(severity="watch", title="Q", auto_fixed=True)]) is None
