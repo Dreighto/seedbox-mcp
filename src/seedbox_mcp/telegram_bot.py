@@ -564,6 +564,31 @@ _TOOL_TO_SECTION: dict[str, str] = {
     tool: name for name, section in PROMPT_SECTIONS.items() for tool in section["tools"]
 }
 
+# _TOOL_TO_SECTION last-wins on any tool name shared across sections. That's
+# harmless for a read-only tool like nas_log_search (library + host) — it can
+# never become a pending_action, so there's nothing to protect. It would NOT
+# be harmless for an ACTION_TOOL: a confirm-gated "yes, do it" looks up its
+# tool's owning section via _TOOL_TO_SECTION to protect it from shedding
+# (see _prioritized_sections' `protected` arg), and an ambiguous mapping could
+# silently protect the wrong section, letting the real one get shed. Guard the
+# actual invariant — no ACTION_TOOL may live in more than one section — rather
+# than a blanket global-uniqueness rule that would wrongly flag the harmless
+# read-only overlap.
+_action_tool_sections: dict[str, list[str]] = {}
+for _section_name, _section in PROMPT_SECTIONS.items():
+    for _tool in _section["tools"]:
+        if _tool in ACTION_TOOLS:
+            _action_tool_sections.setdefault(_tool, []).append(_section_name)
+_ambiguous_action_tools = {
+    tool: sections for tool, sections in _action_tool_sections.items() if len(sections) > 1
+}
+assert not _ambiguous_action_tools, (
+    "ACTION_TOOL(s) present in more than one PROMPT_SECTION, making the "
+    "pending_action protect lookup ambiguous: "
+    f"{_ambiguous_action_tools}"
+)
+del _section_name, _section, _tool, _action_tool_sections, _ambiguous_action_tools
+
 
 def _prioritized_sections(
     matched: set[str],

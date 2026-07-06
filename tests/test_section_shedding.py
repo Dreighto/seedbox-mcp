@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from seedbox_mcp.telegram_bot import MAX_ACTIVE_SECTIONS, _prioritized_sections
+from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS
+from seedbox_mcp.telegram_bot import MAX_ACTIVE_SECTIONS, PROMPT_SECTIONS, _prioritized_sections
 
 
 def test_no_matched_no_protected_drops_oldest_prior() -> None:
@@ -54,3 +55,21 @@ def test_short_conversation_within_cap_matches_old_behavior() -> None:
     for msg_sections in [{"library"}, {"web"}]:
         prior = _prioritized_sections(matched=msg_sections, prior_ordered=prior, protected=None, cap=3)
     assert set(prior) == {"library", "web"}
+
+
+def test_no_action_tool_lives_in_more_than_one_section() -> None:
+    # Mirrors the import-time guard in telegram_bot.py: an ACTION_TOOL must
+    # map unambiguously to one PROMPT_SECTION, since a bare "yes, do it"
+    # confirm looks up the section owning its pending tool via
+    # _TOOL_TO_SECTION to protect it from shedding. A tool appearing in two
+    # sections would make that lookup ambiguous and could silently protect
+    # the wrong section. Read-only tools (e.g. nas_log_search, shared by
+    # 'library' and 'host') are fine to overlap — they can never become a
+    # pending_action.
+    tool_to_sections: dict[str, list[str]] = {}
+    for name, section in PROMPT_SECTIONS.items():
+        for tool in section["tools"]:
+            if tool in ACTION_TOOLS:
+                tool_to_sections.setdefault(tool, []).append(name)
+    ambiguous = {tool: sections for tool, sections in tool_to_sections.items() if len(sections) > 1}
+    assert not ambiguous, f"ACTION_TOOL(s) ambiguous across sections: {ambiguous}"
