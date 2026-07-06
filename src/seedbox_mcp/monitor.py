@@ -402,34 +402,85 @@ def _notes_to_findings(*notes: str | None) -> list[Finding]:
     return out
 
 
-async def run_monitor_cycle(model: str | None = None) -> list[Finding]:
+# Shared checklist fragment for both the scheduled (acting) and on-demand
+# (read_only) task strings — kept as ONE fragment so the two paths can't
+# silently drift apart on which tools get checked or in what order. Only the
+# preamble sentence describing what already happened (or didn't) differs
+# between the two callers below.
+_CHECK_ORDER = (
+    "Call each of these exactly once, in this order, before deciding whether anything needs a "
+    "report: nasdoom_health, nasdoom_queue, nasdoom_requests_overview, nasdoom_control, "
+    "nas_backup_health, prowlarr_indexer_stats, nas_disk_health. Disk verdicts (ok/watch/"
+    "replace_now) are computed in code; a watch or replace_now verdict is ALWAYS report-worthy, "
+    "quoted with its exact reasons."
+)
+
+# The scheduled path: deterministic fixers already ran before this turn, so
+# the model is told not to duplicate that work and just report current
+# state, plus the one thing that IS still its job (escalating a persistent
+# failure the loop guard caught).
+_ACTING_PREAMBLE = (
+    f"Run your check cycle now. {_CHECK_ORDER} "
+    "Note: the queue's paused state, any stalled downloads, AND any down media-stack "
+    "container have already been checked and auto-corrected before you started, by separate "
+    "deterministic steps — don't try to fix those yourself, just report current state. One "
+    "thing that IS yours: if a service shows down/unhealthy and the recovery note says it was "
+    "already restarted and didn't come back (loop guard tripped), that's a persistent failure "
+    "— escalate_to_worker with what you see."
+)
+
+# The on-demand "full status" path: nothing has been auto-corrected before
+# this turn (no deterministic fixers ran, and the model has no action or
+# escalation tools available), so it must never claim otherwise — it only
+# checks and reports current state.
+_READ_ONLY_PREAMBLE = (
+    f"Run a read-only status check now. {_CHECK_ORDER} "
+    "You have read-only tools only for this request — nothing has been auto-corrected before "
+    "you started, and you cannot fix or escalate anything yourself right now. Just report "
+    "current state honestly, including anything that looks wrong (e.g. a paused queue, a stuck "
+    "download, or a down service) exactly as you observe it."
+)
+
+
+async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -> list[Finding]:
     """Runs one check cycle and returns the structured findings for it.
     An empty list means a clean cycle (nothing actionable) — the expected,
     common outcome. Deterministic-fix notes (queue resume, strike fix,
     service restart) are always folded in as auto-fixed findings, even on an
-    otherwise-clean cycle."""
+    otherwise-clean cycle.
+
+    `read_only=True` is the on-demand "full status" path (Telegram status
+    intent): it must never act. It skips all three deterministic fixers
+    below and gives the model only read tools — no action_tools, no
+    escalation_tools — so an operator asking "what's the status" can never
+    trigger a real restart or queue change as a side effect. The scheduled
+    path (`read_only=False`, the default) is unchanged: it's the only one
+    with standing authority to act autonomously."""
     settings = MonitorSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
 
     await _keep_interactive_model_warm(settings.ollama_url)
-    queue_fix_note = await _deterministic_queue_resume(mcp_client)
-    # Strike-based stalled-download fixer — deterministic, same "keep it out
-    # of the LLM's hands" rationale as the queue-resume above: strike
-    # counting needs persistent state across cycles and a fixed threshold,
-    # not model judgment. Runs before the LLM and its outcome is folded into
-    # the report.
-    strike_note = None
-    try:
-        strike_note = await run_download_strike_check(settings, time.time())
-    except Exception:
-        logger.exception("download strike check failed (non-fatal)")
 
-    # Auto-restart a down media container (deterministic, cooldown-guarded).
+    queue_fix_note = None
+    strike_note = None
     recovery_note = None
-    try:
-        recovery_note = await _deterministic_service_recovery(mcp_client, time.time())
-    except Exception:
-        logger.exception("service recovery check failed (non-fatal)")
+    if not read_only:
+        queue_fix_note = await _deterministic_queue_resume(mcp_client)
+        # Strike-based stalled-download fixer — deterministic, same "keep it
+        # out of the LLM's hands" rationale as the queue-resume above:
+        # strike counting needs persistent state across cycles and a fixed
+        # threshold, not model judgment. Runs before the LLM and its outcome
+        # is folded into the report.
+        try:
+            strike_note = await run_download_strike_check(settings, time.time())
+        except Exception:
+            logger.exception("download strike check failed (non-fatal)")
+
+        # Auto-restart a down media container (deterministic, cooldown-guarded).
+        try:
+            recovery_note = await _deterministic_service_recovery(mcp_client, time.time())
+        except Exception:
+            logger.exception("service recovery check failed (non-fatal)")
 
     # Spelled out as an explicit checklist in the TASK message, not just
     # buried in the system prompt — live testing found the model skip
@@ -437,28 +488,21 @@ async def run_monitor_cycle(model: str | None = None) -> list[Finding]:
     # actual finding, most likely because a run of hallucinated-kwarg
     # retries on other tools ate the round budget first. A direct per-turn
     # checklist is a stronger nudge than a system-prompt line the model has
-    # to recall unprompted.
-    task = (
-        "Run your check cycle now. Call each of these exactly once, in this order, "
-        "before deciding whether anything needs a report: nasdoom_health, nasdoom_queue, "
-        "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats, "
-        "nas_disk_health. Disk verdicts (ok/watch/replace_now) are computed in code; a watch or "
-        "replace_now verdict is ALWAYS report-worthy, quoted with its exact reasons. "
-        "Note: the queue's paused state, any stalled downloads, AND any down media-stack "
-        "container have already been checked and auto-corrected before you started, by separate "
-        "deterministic steps — don't try to fix those yourself, just report current state. One "
-        "thing that IS yours: if a service shows down/unhealthy and the recovery note says it was "
-        "already restarted and didn't come back (loop guard tripped), that's a persistent failure "
-        "— escalate_to_worker with what you see."
-    )
+    # to recall unprompted. Shared between the acting (scheduled) and
+    # read_only (on-demand) paths so the checklist itself never drifts
+    # between the two — only the preamble describing what already happened
+    # (or didn't) differs.
+    task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
         task + "\n\n" + FINDINGS_INSTRUCTION,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_monitor_model,
-        allowed_tools=MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
-        action_tools=MONITOR_ACTION_TOOLS,
-        escalation_tools=MONITOR_ESCALATION_TOOLS,
+        allowed_tools=MONITOR_READ_ONLY_TOOLS
+        if read_only
+        else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
+        action_tools=set() if read_only else MONITOR_ACTION_TOOLS,
+        escalation_tools=set() if read_only else MONITOR_ESCALATION_TOOLS,
         ollama_url=settings.ollama_url,
         # Six independent signals to check in one turn, each a real chance
         # to consume a round on a hallucinated-then-retried kwarg (an

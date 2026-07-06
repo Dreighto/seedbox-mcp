@@ -685,7 +685,12 @@ async def _handle_message(
         from seedbox_mcp.telegram import send_message_html
         from seedbox_mcp.triage import render_triage
 
-        findings = await run_monitor_cycle()
+        # read_only=True: an operator asking for "full status" is asking a
+        # question, not authorizing an action — this on-demand path must
+        # never resume a queue, restart a service, or escalate anything as
+        # a side effect. That standing authority stays exclusive to the
+        # scheduled monitor.main cycle.
+        findings = await run_monitor_cycle(read_only=True)
         rendered, _markup = render_triage(findings)
         await send_message_html(token, chat_id, rendered)
         return state
