@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
+from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
 from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
@@ -105,12 +106,6 @@ POLL_TIMEOUT_S = 30
 # means an in-flight confirm/id-reference fails closed and needs a fresh
 # preview/lookup — an ok-either-way default rather than a real problem.
 HISTORY_PATH = Path(__file__).resolve().parent.parent.parent / ".telegram_bot_history.json"
-
-
-class ChatState(dict[str, Any]):
-    """{"history": list[dict], "pending_action": dict | None,
-    "known_entity_ids": dict[str, list[int]]} — a thin alias so callers
-    don't have to spell out the shape every time."""
 
 
 def _load_chat_states() -> dict[int, ChatState]:
@@ -544,14 +539,93 @@ plex_now_playing, not Tautulli.)
 }
 
 
-def _select_sections(text: str, active: set[str]) -> set[str]:
-    """Returns the updated sticky section set for this conversation —
-    previously active sections stay, new keyword matches join."""
+def _matched_sections(text: str) -> set[str]:
+    """Keyword-matched sections for THIS message only — no stickiness, no
+    prior state. The stickiness/cap logic lives in _prioritized_sections."""
     lowered = text.lower()
-    for name, section in PROMPT_SECTIONS.items():
-        if name not in active and any(kw in lowered for kw in section["keywords"]):
-            active.add(name)
-    return active
+    return {name for name, section in PROMPT_SECTIONS.items() if any(kw in lowered for kw in section["keywords"])}
+
+
+# Sections are sticky (see the comment above PROMPT_CORE) so a follow-up like
+# "yes do it" that carries no keywords still has its tool loaded. Left
+# unbounded, a long multi-topic conversation accretes every section it ever
+# touched — measured up to ~63 tools / ~15k tokens of schema on every
+# subsequent turn, most of it irrelevant to the current message. Cap how many
+# non-current sections stay loaded, keeping the most-recently-used ones, so a
+# long chat's per-turn cost stops growing. 3 concurrent topic-sections covers
+# realistic multi-topic turns without capping the underlying keyword lists.
+MAX_ACTIVE_SECTIONS = 3
+
+# tool name -> owning section name, built once at import time. Used to find
+# which section a pending confirm-gated action's tool lives in, so shedding
+# never evicts the tool a same-conversation "yes" needs to re-run it with
+# confirm=true (see _prioritized_sections' `protected` argument).
+_TOOL_TO_SECTION: dict[str, str] = {
+    tool: name for name, section in PROMPT_SECTIONS.items() for tool in section["tools"]
+}
+
+# _TOOL_TO_SECTION last-wins on any tool name shared across sections. That's
+# harmless for a read-only tool like nas_log_search (library + host) — it can
+# never become a pending_action, so there's nothing to protect. It would NOT
+# be harmless for an ACTION_TOOL: a confirm-gated "yes, do it" looks up its
+# tool's owning section via _TOOL_TO_SECTION to protect it from shedding
+# (see _prioritized_sections' `protected` arg), and an ambiguous mapping could
+# silently protect the wrong section, letting the real one get shed. Guard the
+# actual invariant — no ACTION_TOOL may live in more than one section — rather
+# than a blanket global-uniqueness rule that would wrongly flag the harmless
+# read-only overlap.
+_action_tool_sections: dict[str, list[str]] = {}
+for _section_name, _section in PROMPT_SECTIONS.items():
+    for _tool in _section["tools"]:
+        if _tool in ACTION_TOOLS:
+            _action_tool_sections.setdefault(_tool, []).append(_section_name)
+_ambiguous_action_tools = {
+    tool: sections for tool, sections in _action_tool_sections.items() if len(sections) > 1
+}
+assert not _ambiguous_action_tools, (
+    "ACTION_TOOL(s) present in more than one PROMPT_SECTION, making the "
+    "pending_action protect lookup ambiguous: "
+    f"{_ambiguous_action_tools}"
+)
+del _section_name, _section, _tool, _action_tool_sections, _ambiguous_action_tools
+
+
+def _prioritized_sections(
+    matched: set[str],
+    prior_ordered: list[str],
+    protected: str | None,
+    cap: int,
+) -> list[str]:
+    """Pure function: decides which sections survive this turn, most-
+    recently-used first.
+
+    `matched` (this turn's keyword hits, plus any force_sections) are NEVER
+    dropped — they're needed for the current message. `protected` (the
+    section owning a pending_action's tool, if any) is also never dropped —
+    that's the "yes, do it" case: a bare confirm reply carries no keywords,
+    so the section housing the tool it needs to re-run must survive even
+    if it's the oldest thing in `prior_ordered`. Both can push the result
+    past `cap`; the cap only trims sections that are neither matched nor
+    protected.
+    """
+    kept: list[str] = []
+    seen: set[str] = set()
+    for name in sorted(matched):
+        if name not in seen:
+            kept.append(name)
+            seen.add(name)
+    remaining = max(cap - len(kept), 0)
+    for name in prior_ordered:
+        if name in seen:
+            continue
+        if remaining <= 0:
+            break
+        kept.append(name)
+        seen.add(name)
+        remaining -= 1
+    if protected is not None and protected not in seen:
+        kept.append(protected)
+    return kept
 
 
 def _build_context(active: set[str]) -> tuple[str, set[str]]:
@@ -637,19 +711,6 @@ right now.
 """
 
 
-async def _set_bot_commands(token: str) -> None:
-    """Registers the /help command with Telegram so it shows in the client's
-    command menu — best-effort, a failure here doesn't stop the bot from
-    working, it just means the menu entry won't appear."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        resp = await http.post(
-            f"{TELEGRAM_API}/bot{token}/setMyCommands",
-            json={"commands": [{"command": "help", "description": "What can you do?"}]},
-        )
-    if resp.is_error:
-        logger.warning("setMyCommands failed (non-fatal): %s %s", resp.status_code, resp.text)
-
-
 class BotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
     ollama_bot_model: str = DEFAULT_BOT_MODEL
@@ -695,10 +756,14 @@ async def _handle_message(
         await send_message_html(token, chat_id, rendered)
         return state
 
-    active_sections = set(state.get("active_sections") or [])
+    prior_sections: list[str] = list(state.get("active_sections") or [])
+    matched = _matched_sections(text)
     if force_sections:
-        active_sections |= force_sections
-    active_sections = _select_sections(text, active_sections)
+        matched |= force_sections
+    pending_tool = (state.get("pending_action") or {}).get("tool")
+    protected = _TOOL_TO_SECTION.get(pending_tool) if pending_tool else None
+    active_sections_ordered = _prioritized_sections(matched, prior_sections, protected, MAX_ACTIVE_SECTIONS)
+    active_sections = set(active_sections_ordered)
     system_prompt, allowed_tools = _build_context(active_sections)
 
     # Give the model the alert the operator is most likely replying to (see
@@ -798,25 +863,15 @@ async def _handle_message(
             history=trim_history(new_history),
             pending_action=new_pending_action,
             known_entity_ids=new_known_entity_ids,
-            active_sections=sorted(active_sections),
+            active_sections=active_sections_ordered,
         )
     await send_message(token, chat_id, reply)
     return ChatState(
         history=trim_history(new_history),
         pending_action=new_pending_action,
         known_entity_ids=new_known_entity_ids,
-        active_sections=sorted(active_sections),
+        active_sections=active_sections_ordered,
     )
-
-
-async def _download_telegram_photo(token: str, file_id: str) -> bytes:
-    async with httpx.AsyncClient(timeout=20.0) as http:
-        resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})
-        resp.raise_for_status()
-        file_path = resp.json()["result"]["file_path"]
-        resp = await http.get(f"https://api.telegram.org/file/bot{token}/{file_path}")
-        resp.raise_for_status()
-        return resp.content
 
 
 async def _handle_photo_message(
