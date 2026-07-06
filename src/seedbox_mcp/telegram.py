@@ -14,6 +14,13 @@ _TABLE_ROW_RE = re.compile(r"^\s*\|(.+)\|\s*$")
 _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 
+def strip_dashes(text: str) -> str:
+	"""No em/en-dashes in any bot reply (operator's standing no-slop rule).
+	A numeric range keeps a hyphen; any other dash becomes a comma."""
+	text = re.sub(r"(?<=\d)\s*–\s*(?=\d)", "-", text)
+	return re.sub(r"\s*[—–]\s*", ", ", text)
+
+
 def _markdown_table_to_lines(table_lines: list[str]) -> list[str]:
     """A markdown table Telegram can't render at all (no parse_mode supports
     it) reduced to plain "col1: col2 (col3)" lines — loses grid alignment
@@ -47,8 +54,7 @@ def format_for_telegram(text: str) -> str:
     # enforce it deterministically here — applies to BOTH bots via send_message.
     # A numeric range keeps a hyphen; any other dash becomes a comma, which
     # reads naturally in place of the em-dash the model reaches for.
-    text = re.sub(r"(?<=\d)\s*–\s*(?=\d)", "-", text)
-    text = re.sub(r"\s*[—–]\s*", ", ", text)
+    text = strip_dashes(text)
 
     lines = text.split("\n")
     out_lines: list[str] = []
@@ -86,4 +92,28 @@ async def send_message(token: str, chat_id: int, text: str) -> None:
             )
     if resp.is_error:
         logger.error("telegram sendMessage failed: %s %s", resp.status_code, resp.text)
+        resp.raise_for_status()
+
+
+async def send_message_html(token: str, chat_id: int, text: str, reply_markup: dict | None = None) -> None:
+    """Send an HTML-parse-mode message. The caller is responsible for escaping
+    any model-supplied substrings (triage.render_triage does this). Applies the
+    no-slop dash strip and the length guard, and falls back to plain text on a
+    Telegram 400 so a formatting slip never loses the message."""
+    body = strip_dashes(text)
+    if len(body) > MAX_MESSAGE_CHARS:
+        body = body[: MAX_MESSAGE_CHARS - 20] + "\n\n[truncated]"
+    payload: dict = {"chat_id": chat_id, "text": body, "parse_mode": "HTML"}
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.post(f"{TELEGRAM_API}/bot{token}/sendMessage", json=payload)
+        if resp.status_code == 400:
+            logger.warning("telegram HTML sendMessage rejected (%s), retrying as plain text", resp.text[:200])
+            plain = {"chat_id": chat_id, "text": re.sub(r"<[^>]+>", "", body)}
+            if reply_markup is not None:
+                plain["reply_markup"] = reply_markup
+            resp = await client.post(f"{TELEGRAM_API}/bot{token}/sendMessage", json=plain)
+    if resp.is_error:
+        logger.error("telegram send_message_html failed: %s %s", resp.status_code, resp.text)
         resp.raise_for_status()
