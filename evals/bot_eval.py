@@ -35,6 +35,7 @@ from fastmcp import Client
 import seedbox_mcp.chat.ollama_ai as ollama_ai
 from seedbox_mcp.chat.ollama_ai import ACTION_TOOLS, ESCALATION_TOOLS, READ_ONLY_TOOLS
 from seedbox_mcp.tools.host_health import EXCLUDED_INFRA, RESTARTABLE_SERVICES
+from seedbox_mcp.triage import Finding
 
 logger = logging.getLogger("bot_eval")
 
@@ -319,6 +320,30 @@ async def run_friend(scenario: Scenario, sandbox: SandboxClient) -> list[dict[st
     return transcript
 
 
+async def run_triage_check(sandbox: SandboxClient) -> list[Finding]:
+    """Runs one real monitor cycle through the sandbox: read-only tools hit the
+    real system, writes are intercepted by the sandbox exactly as for the
+    bots above, and the monitor's own `record_action` (its deterministic
+    queue-resume/service-recovery paths write straight to the real ledger,
+    bypassing ollama_ai's copy) is patched out here too, so a sandbox run can
+    never touch `.action_audit.jsonl`."""
+    import seedbox_mcp.monitor as mon
+
+    mon.Client = lambda *a, **k: sandbox  # type: ignore[assignment]
+    mon.record_action = lambda *a, **k: None  # type: ignore[assignment]
+    return await mon.run_monitor_cycle()
+
+
+def check_triage_structure(findings: list[Finding]) -> dict[str, int]:
+    assert isinstance(findings, list)
+    assert all(f.severity in ("needs_fix", "watch", "healthy") for f in findings)
+    assert all(isinstance(f.real, bool) for f in findings)
+    actionable = [f for f in findings if f.severity in ("needs_fix", "watch") and not f.auto_fixed]
+    for f in actionable:
+        assert f.reason, f"actionable finding {f.id} missing a reason"
+    return {"total": len(findings), "actionable": len(actionable)}
+
+
 def grade(scenario: Scenario, transcript: list[dict[str, Any]]) -> dict[str, Any]:
     calls = [c for t in transcript for c in t["tools"]]
     called = {c["tool"] for c in calls}
@@ -363,6 +388,9 @@ async def main() -> None:
     parser.add_argument("--range", default=None, help="e.g. 1-8 (1-indexed, inclusive)")
     parser.add_argument("--model", default=None, help="override the bot model (e.g. deepseek-v4-flash:cloud)")
     parser.add_argument("--suffix", default="", help="results file suffix (e.g. _dsv4flash)")
+    parser.add_argument("--triage", action="store_true",
+                         help="run one real monitor cycle through the sandbox and assert the "
+                              "findings are well-formed, then exit (skips the scenario suite)")
     args = parser.parse_args()
 
     # Integrity: sandbox runs must never write the real audit ledger or trip
@@ -379,6 +407,13 @@ async def main() -> None:
 
     settings = Settings()  # type: ignore[call-arg]
     real = Client(f"http://{settings.mcp_host}:{settings.mcp_port}/mcp", auth=settings.mcp_bearer_token.get_secret_value())
+
+    if args.triage:
+        sandbox = SandboxClient(real)
+        findings = await run_triage_check(sandbox)
+        counts = check_triage_structure(findings)
+        print(f"triage cycle ok: {counts['total']} findings, {counts['actionable']} actionable")
+        return
 
     out_path = Path(__file__).parent / f"results_{args.bot}{args.suffix}.json"
     existing: list[dict[str, Any]] = []

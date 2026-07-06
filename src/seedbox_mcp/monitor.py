@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -16,9 +15,10 @@ from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
-from seedbox_mcp.telegram import send_message
+from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
+from seedbox_mcp.triage import FINDINGS_INSTRUCTION, Finding, fingerprint, parse_findings, render_triage, slugify
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -316,31 +316,171 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     return "\n".join(notes) if notes else None
 
 
-async def run_monitor_cycle(model: str | None = None) -> str | None:
-    """Returns the alert text, or None if the cycle found nothing worth
-    surfacing (the sentinel case) — None is the expected, common outcome."""
+# Markers for lines that must alert a human — checked FIRST, so a bundled
+# note that contains both a real fix and a real problem (e.g. the strike
+# checker's single joined note: "auto-fixed the stalled ones.\nN stuck on
+# import, NOT auto-fixed ... Worth a look.") never has its unresolved half
+# swallowed by the fix classification below.
+_ATTENTION_MARKERS = (
+    "not auto-fixed",
+    "worth a look",
+    "needs escalation",
+    "did not",
+    "still down",
+    "loop guard",
+    "approaching",
+    "stuck",
+)
+
+# Markers for lines describing a deterministic fix that actually worked.
+# Only used when a line matches NONE of the attention markers above.
+_FIX_MARKERS = (
+    "resumed it automatically",
+    "auto-fixed stalled downloads",
+    "restart succeeded",
+    "back up",
+    "verified",
+)
+
+
+def _finding_title(line: str) -> str:
+    """First sentence of the line, cut at the last whitespace before ~70
+    chars rather than mid-word, with trailing punctuation trimmed."""
+    first_sentence = line.split(".")[0].strip()
+    if len(first_sentence) <= 70:
+        return first_sentence.rstrip(", ")
+    cut = first_sentence[:70].rsplit(" ", 1)[0]
+    return cut.rstrip(", ")
+
+
+def _notes_to_findings(*notes: str | None) -> list[Finding]:
+    """Each deterministic-fix note (queue resume, strike fix, service restart)
+    can bundle multiple lines — e.g. the strike checker joins a real fix and
+    an unresolved report with "\\n" in one note. Each non-empty line becomes
+    its OWN finding, classified line-by-line: a line is only ever marked
+    auto_fixed (and so excluded from the push fingerprint) when it matches a
+    fix marker and no attention marker. Anything else defaults to
+    needs_fix/auto_fixed=False — pushing when unsure, rather than silently
+    swallowing an unresolved problem bundled alongside a real fix."""
+    out: list[Finding] = []
+    for note in notes:
+        if not note:
+            continue
+        for line in note.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            title = _finding_title(stripped)
+            lowered = stripped.lower()
+            has_attention = any(marker in lowered for marker in _ATTENTION_MARKERS)
+            is_fix = not has_attention and any(marker in lowered for marker in _FIX_MARKERS)
+            if is_fix:
+                out.append(
+                    Finding(
+                        id=slugify(title),
+                        severity="watch",
+                        title=title,
+                        real=True,
+                        reason=stripped,
+                        fixable_by="proven",
+                        auto_fixed=True,
+                    )
+                )
+            else:
+                out.append(
+                    Finding(
+                        id=slugify(title),
+                        severity="needs_fix",
+                        title=title,
+                        real=True,
+                        reason=stripped,
+                        recommendation="look into it",
+                        fixable_by="agent",
+                        auto_fixed=False,
+                    )
+                )
+    return out
+
+
+# Shared checklist fragment for both the scheduled (acting) and on-demand
+# (read_only) task strings — kept as ONE fragment so the two paths can't
+# silently drift apart on which tools get checked or in what order. Only the
+# preamble sentence describing what already happened (or didn't) differs
+# between the two callers below.
+_CHECK_ORDER = (
+    "Call each of these exactly once, in this order, before deciding whether anything needs a "
+    "report: nasdoom_health, nasdoom_queue, nasdoom_requests_overview, nasdoom_control, "
+    "nas_backup_health, prowlarr_indexer_stats, nas_disk_health. Disk verdicts (ok/watch/"
+    "replace_now) are computed in code; a watch or replace_now verdict is ALWAYS report-worthy, "
+    "quoted with its exact reasons."
+)
+
+# The scheduled path: deterministic fixers already ran before this turn, so
+# the model is told not to duplicate that work and just report current
+# state, plus the one thing that IS still its job (escalating a persistent
+# failure the loop guard caught).
+_ACTING_PREAMBLE = (
+    f"Run your check cycle now. {_CHECK_ORDER} "
+    "Note: the queue's paused state, any stalled downloads, AND any down media-stack "
+    "container have already been checked and auto-corrected before you started, by separate "
+    "deterministic steps — don't try to fix those yourself, just report current state. One "
+    "thing that IS yours: if a service shows down/unhealthy and the recovery note says it was "
+    "already restarted and didn't come back (loop guard tripped), that's a persistent failure "
+    "— escalate_to_worker with what you see."
+)
+
+# The on-demand "full status" path: nothing has been auto-corrected before
+# this turn (no deterministic fixers ran, and the model has no action or
+# escalation tools available), so it must never claim otherwise — it only
+# checks and reports current state.
+_READ_ONLY_PREAMBLE = (
+    f"Run a read-only status check now. {_CHECK_ORDER} "
+    "You have read-only tools only for this request — nothing has been auto-corrected before "
+    "you started, and you cannot fix or escalate anything yourself right now. Just report "
+    "current state honestly, including anything that looks wrong (e.g. a paused queue, a stuck "
+    "download, or a down service) exactly as you observe it."
+)
+
+
+async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -> list[Finding]:
+    """Runs one check cycle and returns the structured findings for it.
+    An empty list means a clean cycle (nothing actionable) — the expected,
+    common outcome. Deterministic-fix notes (queue resume, strike fix,
+    service restart) are always folded in as auto-fixed findings, even on an
+    otherwise-clean cycle.
+
+    `read_only=True` is the on-demand "full status" path (Telegram status
+    intent): it must never act. It skips all three deterministic fixers
+    below and gives the model only read tools — no action_tools, no
+    escalation_tools — so an operator asking "what's the status" can never
+    trigger a real restart or queue change as a side effect. The scheduled
+    path (`read_only=False`, the default) is unchanged: it's the only one
+    with standing authority to act autonomously."""
     settings = MonitorSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
 
     await _keep_interactive_model_warm(settings.ollama_url)
-    queue_fix_note = await _deterministic_queue_resume(mcp_client)
-    # Strike-based stalled-download fixer — deterministic, same "keep it out
-    # of the LLM's hands" rationale as the queue-resume above: strike
-    # counting needs persistent state across cycles and a fixed threshold,
-    # not model judgment. Runs before the LLM and its outcome is folded into
-    # the report.
-    strike_note = None
-    try:
-        strike_note = await run_download_strike_check(settings, time.time())
-    except Exception:
-        logger.exception("download strike check failed (non-fatal)")
 
-    # Auto-restart a down media container (deterministic, cooldown-guarded).
+    queue_fix_note = None
+    strike_note = None
     recovery_note = None
-    try:
-        recovery_note = await _deterministic_service_recovery(mcp_client, time.time())
-    except Exception:
-        logger.exception("service recovery check failed (non-fatal)")
+    if not read_only:
+        queue_fix_note = await _deterministic_queue_resume(mcp_client)
+        # Strike-based stalled-download fixer — deterministic, same "keep it
+        # out of the LLM's hands" rationale as the queue-resume above:
+        # strike counting needs persistent state across cycles and a fixed
+        # threshold, not model judgment. Runs before the LLM and its outcome
+        # is folded into the report.
+        try:
+            strike_note = await run_download_strike_check(settings, time.time())
+        except Exception:
+            logger.exception("download strike check failed (non-fatal)")
+
+        # Auto-restart a down media container (deterministic, cooldown-guarded).
+        try:
+            recovery_note = await _deterministic_service_recovery(mcp_client, time.time())
+        except Exception:
+            logger.exception("service recovery check failed (non-fatal)")
 
     # Spelled out as an explicit checklist in the TASK message, not just
     # buried in the system prompt — live testing found the model skip
@@ -348,28 +488,21 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
     # actual finding, most likely because a run of hallucinated-kwarg
     # retries on other tools ate the round budget first. A direct per-turn
     # checklist is a stronger nudge than a system-prompt line the model has
-    # to recall unprompted.
-    task = (
-        "Run your check cycle now. Call each of these exactly once, in this order, "
-        "before deciding whether anything needs a report: nasdoom_health, nasdoom_queue, "
-        "nasdoom_requests_overview, nasdoom_control, nas_backup_health, prowlarr_indexer_stats, "
-        "nas_disk_health. Disk verdicts (ok/watch/replace_now) are computed in code; a watch or "
-        "replace_now verdict is ALWAYS report-worthy, quoted with its exact reasons. "
-        "Note: the queue's paused state, any stalled downloads, AND any down media-stack "
-        "container have already been checked and auto-corrected before you started, by separate "
-        "deterministic steps — don't try to fix those yourself, just report current state. One "
-        "thing that IS yours: if a service shows down/unhealthy and the recovery note says it was "
-        "already restarted and didn't come back (loop guard tripped), that's a persistent failure "
-        "— escalate_to_worker with what you see."
-    )
+    # to recall unprompted. Shared between the acting (scheduled) and
+    # read_only (on-demand) paths so the checklist itself never drifts
+    # between the two — only the preamble describing what already happened
+    # (or didn't) differs.
+    task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task,
+        task + "\n\n" + FINDINGS_INSTRUCTION,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_monitor_model,
-        allowed_tools=MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
-        action_tools=MONITOR_ACTION_TOOLS,
-        escalation_tools=MONITOR_ESCALATION_TOOLS,
+        allowed_tools=MONITOR_READ_ONLY_TOOLS
+        if read_only
+        else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
+        action_tools=set() if read_only else MONITOR_ACTION_TOOLS,
+        escalation_tools=set() if read_only else MONITOR_ESCALATION_TOOLS,
         ollama_url=settings.ollama_url,
         # Six independent signals to check in one turn, each a real chance
         # to consume a round on a hallucinated-then-retried kwarg (an
@@ -379,12 +512,11 @@ async def run_monitor_cycle(model: str | None = None) -> str | None:
         # retries before reaching every check.
         max_tool_rounds=20,
     )
-    llm_alert = None if text.strip() == NO_ALERT_SENTINEL else text
     # Deterministic-fix notes always surface (they describe real actions
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
-    parts = [p for p in (queue_fix_note, strike_note, recovery_note, llm_alert) if p]
-    return "\n\n".join(parts) if parts else None
+    llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
+    return _notes_to_findings(queue_fix_note, strike_note, recovery_note) + llm_findings
 
 
 # Alert-dedup state: the fingerprint of the last alert we actually pushed,
@@ -437,42 +569,40 @@ def main() -> None:
     parser.add_argument("--force-alert-test", action="store_true", help="Skip the sentinel check, always push.")
     args = parser.parse_args()
 
-    result = asyncio.run(run_monitor_cycle(args.model))
-    if result is None:
-        print(f"[{NO_ALERT_SENTINEL}] nothing to report this cycle")
+    findings = asyncio.run(run_monitor_cycle(args.model))
+    fp = fingerprint(findings)
+    if fp is None and not args.force_alert_test:
+        print(f"[{NO_ALERT_SENTINEL}] nothing actionable this cycle")
         # Nothing active — clear the dedup state so a later recurrence of the
         # same issue alerts fresh instead of being suppressed as a duplicate.
         _save_alert_state({})
-        if not args.force_alert_test:
-            return
-        result = "(--force-alert-test) monitor cycle completed with no alert-worthy findings."
-    else:
-        print(result)
+        return
 
     # Alert-once-then-quiet: don't re-push an identical unresolved alert every
     # cycle. --force-alert-test bypasses the dedup (it's a manual test).
-    if not args.force_alert_test:
-        fingerprint = hashlib.sha256(result.encode()).hexdigest()
-        should_push, new_state = _alert_decision(fingerprint, _load_alert_state(), time.time())
-        # Keep the alert TEXT alongside the dedup hash: the interactive bot
-        # injects the active alert into its context, so when the operator
-        # replies "investigate and fix it" the bot knows what "it" is (the
-        # alert was pushed by THIS process — it's not in the bot's own chat
-        # history). Cleared with the rest of the state on the all-clear path.
-        new_state["text"] = result
-        _save_alert_state(new_state)
-        if not should_push:
-            print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
-            return
+    should_push, new_state = _alert_decision(fp, _load_alert_state(), time.time())
+    text, _markup = render_triage(findings)
+    # Keep the rendered report TEXT alongside the dedup hash: the interactive
+    # bot injects the active alert into its context, so when the operator
+    # replies "investigate and fix it" the bot knows what "it" is (the alert
+    # was pushed by THIS process — it's not in the bot's own chat history).
+    # Cleared with the rest of the state on the all-clear path.
+    new_state["text"] = text
+    _save_alert_state(new_state)
+    print(text)
+
+    if not should_push and not args.force_alert_test:
+        print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
+        return
 
     if not args.no_telegram:
         settings = MonitorSettings()  # type: ignore[call-arg]
         if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
             asyncio.run(
-                send_message(
+                send_message_html(
                     settings.nas_ops_telegram_bot_token.get_secret_value(),
                     settings.nas_ops_telegram_allowed_chat_id,
-                    f"🔔 {result}",
+                    text,
                 )
             )
         else:

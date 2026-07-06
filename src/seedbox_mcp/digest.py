@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import logging
+import re
 
 from fastmcp import Client
 
@@ -15,7 +17,8 @@ from seedbox_mcp.chat.ollama_ai import (
 )
 from seedbox_mcp.config import Settings
 from seedbox_mcp.graduation import graduation_nudge
-from seedbox_mcp.telegram import send_message
+from seedbox_mcp.telegram import send_message_html
+from seedbox_mcp.triage import FINDINGS_INSTRUCTION, parse_findings, render_triage
 
 logger = logging.getLogger("seedbox_mcp.digest")
 
@@ -121,7 +124,7 @@ async def run_digest(task: str, model: str | None = None) -> str:
     # No history — each scheduled run is a fresh report, not a continuation
     # of yesterday's. Multi-turn memory is a telegram_bot.py concept.
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task,
+        task + "\n\n" + FINDINGS_INSTRUCTION,
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
@@ -155,23 +158,27 @@ def main() -> None:
 
     result = asyncio.run(run_digest(args.task, args.model))
 
+    findings = parse_findings(result)
+    rendered, _markup = render_triage(findings)
+
     # Deterministic autonomy nudge appended out of the LLM's hands: when a fix
     # tool has earned graduation (or has failures worth a look), tell the
     # operator here rather than hoping the model notices. Silent otherwise.
     nudge = graduation_nudge()
     if nudge:
-        result = f"{result}\n\n{nudge}"
+        nudge_html = re.sub(r"\*(.+?)\*", r"<b>\1</b>", html.escape(nudge))
+        rendered = f"{rendered}\n\n{nudge_html}"
 
-    print(result)
+    print(rendered)
 
     if not args.no_telegram:
         settings = DigestSettings()  # type: ignore[call-arg]
         if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
             asyncio.run(
-                send_message(
+                send_message_html(
                     settings.nas_ops_telegram_bot_token.get_secret_value(),
                     settings.nas_ops_telegram_allowed_chat_id,
-                    result,
+                    rendered,
                 )
             )
         else:
