@@ -568,6 +568,49 @@ async def test_staleness_report_attaches_radarr_id(services: Services) -> None:
 
 
 @pytest.mark.asyncio
+async def test_staleness_report_missing_from_plex_matches_by_file_path_not_title(services: Services) -> None:
+    # Plex frequently displays a different matched title than Radarr's (region
+    # subtitle variants, punctuation, etc). Matching on title alone produced
+    # false positives for movies that are actually indexed and playable.
+    services.radarr.routes[("GET", "/api/v3/movie")] = [
+        {
+            "id": 48,
+            "title": "Alien Resurrection",
+            "year": 1997,
+            "hasFile": True,
+            "movieFile": {"path": "/movies/Alien Resurrection (1997)/file.mkv"},
+        },
+        {
+            "id": 99,
+            "title": "Truly Missing Movie",
+            "year": 2020,
+            "hasFile": True,
+            "movieFile": {"path": "/movies/Truly Missing Movie (2020)/file.mkv"},
+        },
+    ]
+    services.sonarr.routes[("GET", "/api/v3/series")] = []
+    plex_items = [
+        {
+            "type": "movie",
+            "title": "Alien: Resurrection",
+            "year": 1997,
+            "section": "Movies",
+            "rating_key": "200",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "last_viewed_at": None,
+            "view_count": 0,
+            "size_on_disk_gb": 8.0,
+            "file_paths": ["/movies/Alien Resurrection (1997)/file.mkv"],
+        },
+    ]
+    object.__setattr__(services, "plex", _StalenessPlex(plex_items))
+    result = await staleness_report(services, media_type="movies", older_than_days=1)
+    assert result["ok"] is True
+    missing_ids = {item["radarr_id"] for item in result["data"]["managed_missing_from_plex"]}
+    assert missing_ids == {99}
+
+
+@pytest.mark.asyncio
 async def test_staleness_report_sort_staleness_desc(services: Services) -> None:
     services.radarr.routes[("GET", "/api/v3/movie")] = []
     services.sonarr.routes[("GET", "/api/v3/series")] = []

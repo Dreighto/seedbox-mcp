@@ -92,11 +92,12 @@ async def staleness_report(
             )
         if include_missing:
             plex_titles = {str(item.get("title", "")).casefold() for item in plex_items}
+            plex_file_paths = {path for item in plex_items for path in item.get("file_paths") or []}
             data["managed_missing_from_plex"] = (
                 [
                     compact_movie(item)
                     for item in radarr_movies
-                    if not item.get("hasFile") or str(item.get("title", "")).casefold() not in plex_titles
+                    if not item.get("hasFile") or not _movie_file_in_plex(item, plex_file_paths)
                 ]
                 + [
                     compact_series(item)
@@ -197,6 +198,16 @@ def _stuck(item: dict[str, Any]) -> bool:
     state = str(item.get("trackedDownloadState") or item.get("trackedDownloadStatus") or "").lower()
     status = str(item.get("status") or "").lower()
     return any(marker in state or marker in status for marker in ["warning", "failed", "blocked", "pending"])
+
+
+def _movie_file_in_plex(movie: dict[str, Any], plex_file_paths: set[str]) -> bool:
+    # Match on file path, not title: Plex often displays a different matched
+    # title than Radarr's (e.g. "Alien: Resurrection" vs "Alien Resurrection",
+    # US vs UK Harry Potter subtitles), which made title-string comparison
+    # flag correctly-indexed movies as missing.
+    movie_file = movie.get("movieFile") or {}
+    path = movie_file.get("path")
+    return bool(path) and path in plex_file_paths
 
 
 def _as_list(value: Any) -> list[dict[str, Any]]:
