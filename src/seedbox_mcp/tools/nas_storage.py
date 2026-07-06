@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,8 +41,15 @@ async def nas_backup_health() -> dict[str, Any]:
                 unit, ["ActiveState", "Result", "ExecMainStatus", "ExecMainExitTimestamp"]
             )
             exit_ts = _parse_systemd_timestamp(props.get("ExecMainExitTimestamp"))
-            hours_since = (now - exit_ts).total_seconds() / 3600 if exit_ts else None
             result = props.get("Result") or "unknown"
+            # ExecMainExitTimestamp is volatile runtime state: systemd does not
+            # persist it across a reboot for Type=oneshot units (RemainAfterExit=no),
+            # so right after any restart this reads empty even though the unit ran
+            # fine before. Fall back to the persistent journal (survives reboots)
+            # before concluding the backup has genuinely never run.
+            if exit_ts is None:
+                exit_ts, result = await _last_run_from_journal(unit) or (None, result)
+            hours_since = (now - exit_ts).total_seconds() / 3600 if exit_ts else None
             if exit_ts is None:
                 status = "never_run"
             elif result != "success":
@@ -128,6 +136,48 @@ async def _systemctl_show(unit: str, properties: list[str]) -> dict[str, str]:
             key, _, value = line.partition("=")
             result[key] = value
     return result
+
+
+# systemd's "Finished <unit>" catalog message. Stable across systemd versions;
+# carries JOB_RESULT (done|failed|...) and is written to the persistent journal,
+# unlike the unit's own ExecMainExitTimestamp runtime property.
+_JOB_FINISHED_MESSAGE_ID = "39f53479d3a045ac8e11786248231fbf"
+
+
+async def _last_run_from_journal(unit: str) -> tuple[datetime, str] | None:
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "journalctl",
+            f"--unit={unit}",
+            f"--identifier=systemd",
+            "-o",
+            "json",
+            "--no-pager",
+            "-n",
+            "50",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+    except TimeoutError:
+        return None
+
+    last: tuple[datetime, str] | None = None
+    for line in stdout.decode().splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("MESSAGE_ID") != _JOB_FINISHED_MESSAGE_ID:
+            continue
+        realtime = entry.get("__REALTIME_TIMESTAMP")
+        if realtime is None:
+            continue
+        ts = datetime.fromtimestamp(int(realtime) / 1_000_000, tz=UTC)
+        job_result = entry.get("JOB_RESULT") or "unknown"
+        result = "success" if job_result == "done" else job_result
+        last = (ts, result)
+    return last
 
 
 def _parse_systemd_timestamp(value: str | None) -> datetime | None:
