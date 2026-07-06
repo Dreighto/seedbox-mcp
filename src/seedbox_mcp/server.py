@@ -17,6 +17,7 @@ from seedbox_mcp.config import Settings, load_settings
 from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
+from seedbox_mcp.schemas import CoercedInt
 from seedbox_mcp.tools.adguard import adguard_protection, adguard_stats
 from seedbox_mcp.tools.downloads import (
     jellyseerr_overview,
@@ -423,7 +424,7 @@ def create_mcp(services: Services) -> FastMCP:
         return await sonarr_monitor_season(services, sonarr_id, season_number, search_now, confirm)
 
     async def radarr_queue_action_tool(
-        queue_id: int,
+        queue_id: CoercedInt,
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -437,7 +438,7 @@ def create_mcp(services: Services) -> FastMCP:
         return await radarr_queue_action(services, queue_id, action, confirm)
 
     async def sonarr_queue_action_tool(
-        queue_id: int,
+        queue_id: CoercedInt,
         action: str,
         confirm: bool = False,
     ) -> dict[str, Any]:
