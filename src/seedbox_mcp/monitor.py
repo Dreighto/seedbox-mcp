@@ -144,6 +144,17 @@ failure rate (prowlarr_indexer_stats' own likely_needs_attention flag) — \
 not a single failed query, that's normal noise.
 - For storage: only genuinely high (>90%) media pool usage, not "getting \
 fuller than usual".
+- For a media request (nasdoom_requests_overview): a request sitting in \
+'processing' (or 'searching') is normal and expected — it waits there until \
+a downloadable release actually exists. NEVER flag one based on how long it \
+has been processing, the request date, or a theatrical / in-cinemas date; \
+none of those is the digital-release date, and elapsed time alone is not \
+evidence of a problem. A title still in cinemas, or with no digital release \
+yet, is correctly waiting, not stuck. Genuinely stalled downloads are \
+already caught by the deterministic queue and strike checks, so a \
+'processing' request is only worth mentioning if the queue/control view \
+shows the title actually downloading and failing. Otherwise requests are \
+healthy — do not report them.
 If you can't get a second reading to confirm within this same turn (a tool \
 error prevents re-checking), say so explicitly rather than either \
 suppressing it or reporting it as confirmed — an "I couldn't verify this, \
