@@ -15,10 +15,10 @@ _TABLE_SEPARATOR_RE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
 
 
 def strip_dashes(text: str) -> str:
-	"""No em/en-dashes in any bot reply (operator's standing no-slop rule).
-	A numeric range keeps a hyphen; any other dash becomes a comma."""
-	text = re.sub(r"(?<=\d)\s*–\s*(?=\d)", "-", text)
-	return re.sub(r"\s*[—–]\s*", ", ", text)
+    """No em/en-dashes in any bot reply (operator's standing no-slop rule).
+    A numeric range keeps a hyphen; any other dash becomes a comma."""
+    text = re.sub(r"(?<=\d)\s*–\s*(?=\d)", "-", text)
+    return re.sub(r"\s*[—–]\s*", ", ", text)
 
 
 def _markdown_table_to_lines(table_lines: list[str]) -> list[str]:

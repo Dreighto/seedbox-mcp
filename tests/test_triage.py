@@ -52,6 +52,10 @@ def test_parse_findings_drops_invalid_items_keeps_valid():
     assert [f.title for f in findings] == ["Good"]
 
 
+def test_parse_findings_empty_array_returns_empty():
+    assert parse_findings("[]") == []
+
+
 def _f(**kw):
     base = dict(id="x", severity="healthy", title="t", real=True, reason="r")
     base.update(kw)
@@ -79,8 +83,9 @@ def test_render_groups_and_counts():
 
 def test_render_escapes_html():
     text, _ = render_triage([_f(severity="needs_fix", title="A <b> & <i>", real=True, reason="x")])
-    assert "<b>" not in text.replace("<b>", "")  # raw tag from title must be escaped
-    assert "&lt;b&gt;" in text or "&amp;" in text
+    # render_triage legitimately emits its own <b> header tags, so assert on
+    # the escaped title substring rather than a global "<b>" absence.
+    assert "A &lt;b&gt; &amp; &lt;i&gt;" in text
 
 
 def test_render_all_healthy_has_no_attention_header():

@@ -110,7 +110,7 @@ def parse_findings(text: str) -> list[Finding]:
                 evidence=str(item.get("evidence", "")).strip(),
             )
         )
-    return findings or _fallback(text)
+    return findings
 
 
 _ACTIONABLE = ("needs_fix", "watch")

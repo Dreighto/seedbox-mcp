@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import logging
+import re
 
 from fastmcp import Client
 
@@ -164,7 +166,8 @@ def main() -> None:
     # operator here rather than hoping the model notices. Silent otherwise.
     nudge = graduation_nudge()
     if nudge:
-        rendered = f"{rendered}\n\n{nudge}"
+        nudge_html = re.sub(r"\*(.+?)\*", r"<b>\1</b>", html.escape(nudge))
+        rendered = f"{rendered}\n\n{nudge_html}"
 
     print(rendered)
 

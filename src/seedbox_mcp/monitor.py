@@ -316,24 +316,46 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     return "\n".join(notes) if notes else None
 
 
+_FAILURE_PHRASES = ("needs escalation", "did not", "still down", "loop guard")
+
+
 def _notes_to_findings(*notes: str | None) -> list[Finding]:
     """Each deterministic-fix note (queue resume, strike fix, service restart)
-    becomes an auto-fixed finding so it renders in the AUTO-FIXED group."""
+    becomes a finding. A note that reports a FAILED recovery (still down,
+    restart did not stick, loop guard tripped, needs escalation) becomes a
+    real needs_fix finding so it still alerts — auto_fixed is reserved for
+    notes describing a fix that actually worked."""
     out: list[Finding] = []
     for note in notes:
         if note and note.strip():
-            title = note.strip().split(".")[0][:80]
-            out.append(
-                Finding(
-                    id=slugify(title),
-                    severity="watch",
-                    title=title,
-                    real=True,
-                    reason=note.strip(),
-                    fixable_by="proven",
-                    auto_fixed=True,
+            stripped = note.strip()
+            title = stripped.split(".")[0][:80]
+            is_failure = any(phrase in stripped.lower() for phrase in _FAILURE_PHRASES)
+            if is_failure:
+                out.append(
+                    Finding(
+                        id=slugify(title),
+                        severity="needs_fix",
+                        title=title,
+                        real=True,
+                        reason=stripped,
+                        recommendation="escalate",
+                        fixable_by="agent",
+                        auto_fixed=False,
+                    )
                 )
-            )
+            else:
+                out.append(
+                    Finding(
+                        id=slugify(title),
+                        severity="watch",
+                        title=title,
+                        real=True,
+                        reason=stripped,
+                        fixable_by="proven",
+                        auto_fixed=True,
+                    )
+                )
     return out
 
 
