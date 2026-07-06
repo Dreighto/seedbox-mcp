@@ -2,17 +2,32 @@ from seedbox_mcp.monitor import _notes_to_findings
 from seedbox_mcp.triage import fingerprint
 
 
-def test_notes_become_autofixed_findings():
-    out = _notes_to_findings("Queue was paused, resumed it.", None, "Restarted tautulli, verified up.")
+def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
+    note = (
+        "Auto-fixed stalled downloads (removed, blocklisted, re-searching) after 2+ cycles "
+        "stalled: X.\n"
+        '2 download(s) stuck on import, likely a permissions or path issue (NOT auto-fixed, '
+        'since re-downloading won\'t fix that): "Y" (stuck importing). Worth a look.'
+    )
+    out = _notes_to_findings(note)
     assert len(out) == 2
-    assert all(f.auto_fixed for f in out)
-    assert all(f.severity == "watch" for f in out)
-    titles = " ".join(f.title for f in out).lower()
-    assert "queue" in titles or "resumed" in titles
+
+    fix, stuck = out
+    assert fix.auto_fixed is True
+    assert fix.severity == "watch"
+
+    assert stuck.auto_fixed is False
+    assert stuck.severity == "needs_fix"
+    assert fingerprint([stuck]) is not None
 
 
-def test_notes_empty_gives_no_findings():
-    assert _notes_to_findings(None, None, None) == []
+def test_queue_resume_note_becomes_autofixed_watch():
+    note = "Deterministic check: the download queue was paused, resumed it automatically."
+    out = _notes_to_findings(note)
+    assert len(out) == 1
+    f = out[0]
+    assert f.auto_fixed is True
+    assert f.severity == "watch"
 
 
 def test_failed_recovery_note_becomes_needs_fix_and_still_alerts():
@@ -25,9 +40,16 @@ def test_failed_recovery_note_becomes_needs_fix_and_still_alerts():
     assert fingerprint([f]) is not None
 
 
-def test_success_note_stays_autofixed_watch():
-    out = _notes_to_findings("Queue was paused, resumed it.")
+def test_sabnzbd_advisory_note_becomes_needs_fix_and_pushes():
+    note = "SABnzbd download history has grown to 58 items, approaching the 60-item window."
+    out = _notes_to_findings(note)
     assert len(out) == 1
     f = out[0]
-    assert f.auto_fixed is True
-    assert f.severity == "watch"
+    assert f.severity == "needs_fix"
+    assert f.auto_fixed is False
+    assert fingerprint([f]) is not None
+
+
+def test_notes_empty_gives_no_findings():
+    assert _notes_to_findings(None, None, None) == []
+    assert _notes_to_findings("", "   ", None) == []

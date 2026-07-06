@@ -316,35 +316,65 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     return "\n".join(notes) if notes else None
 
 
-_FAILURE_PHRASES = ("needs escalation", "did not", "still down", "loop guard")
+# Markers for lines that must alert a human — checked FIRST, so a bundled
+# note that contains both a real fix and a real problem (e.g. the strike
+# checker's single joined note: "auto-fixed the stalled ones.\nN stuck on
+# import, NOT auto-fixed ... Worth a look.") never has its unresolved half
+# swallowed by the fix classification below.
+_ATTENTION_MARKERS = (
+    "not auto-fixed",
+    "worth a look",
+    "needs escalation",
+    "did not",
+    "still down",
+    "loop guard",
+    "approaching",
+    "stuck",
+)
+
+# Markers for lines describing a deterministic fix that actually worked.
+# Only used when a line matches NONE of the attention markers above.
+_FIX_MARKERS = (
+    "resumed it automatically",
+    "auto-fixed stalled downloads",
+    "restart succeeded",
+    "back up",
+    "verified",
+)
+
+
+def _finding_title(line: str) -> str:
+    """First sentence of the line, cut at the last whitespace before ~70
+    chars rather than mid-word, with trailing punctuation trimmed."""
+    first_sentence = line.split(".")[0].strip()
+    if len(first_sentence) <= 70:
+        return first_sentence.rstrip(", ")
+    cut = first_sentence[:70].rsplit(" ", 1)[0]
+    return cut.rstrip(", ")
 
 
 def _notes_to_findings(*notes: str | None) -> list[Finding]:
     """Each deterministic-fix note (queue resume, strike fix, service restart)
-    becomes a finding. A note that reports a FAILED recovery (still down,
-    restart did not stick, loop guard tripped, needs escalation) becomes a
-    real needs_fix finding so it still alerts — auto_fixed is reserved for
-    notes describing a fix that actually worked."""
+    can bundle multiple lines — e.g. the strike checker joins a real fix and
+    an unresolved report with "\\n" in one note. Each non-empty line becomes
+    its OWN finding, classified line-by-line: a line is only ever marked
+    auto_fixed (and so excluded from the push fingerprint) when it matches a
+    fix marker and no attention marker. Anything else defaults to
+    needs_fix/auto_fixed=False — pushing when unsure, rather than silently
+    swallowing an unresolved problem bundled alongside a real fix."""
     out: list[Finding] = []
     for note in notes:
-        if note and note.strip():
-            stripped = note.strip()
-            title = stripped.split(".")[0][:80]
-            is_failure = any(phrase in stripped.lower() for phrase in _FAILURE_PHRASES)
-            if is_failure:
-                out.append(
-                    Finding(
-                        id=slugify(title),
-                        severity="needs_fix",
-                        title=title,
-                        real=True,
-                        reason=stripped,
-                        recommendation="escalate",
-                        fixable_by="agent",
-                        auto_fixed=False,
-                    )
-                )
-            else:
+        if not note:
+            continue
+        for line in note.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            title = _finding_title(stripped)
+            lowered = stripped.lower()
+            has_attention = any(marker in lowered for marker in _ATTENTION_MARKERS)
+            is_fix = not has_attention and any(marker in lowered for marker in _FIX_MARKERS)
+            if is_fix:
                 out.append(
                     Finding(
                         id=slugify(title),
@@ -354,6 +384,19 @@ def _notes_to_findings(*notes: str | None) -> list[Finding]:
                         reason=stripped,
                         fixable_by="proven",
                         auto_fixed=True,
+                    )
+                )
+            else:
+                out.append(
+                    Finding(
+                        id=slugify(title),
+                        severity="needs_fix",
+                        title=title,
+                        real=True,
+                        reason=stripped,
+                        recommendation="look into it",
+                        fixable_by="agent",
+                        auto_fixed=False,
                     )
                 )
     return out
