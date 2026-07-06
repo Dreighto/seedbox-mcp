@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,21 @@ _INVESTIGATE_KEYWORDS = (
 def _is_investigation(text: str) -> bool:
     lowered = text.lower()
     return any(kw in lowered for kw in _INVESTIGATE_KEYWORDS)
+
+
+# On-demand full-status ask — the operator wants the same triage report the
+# background monitor pushes on its own cycle, run right now instead of
+# waiting. Deliberately narrow (word-boundary phrases, not loose keywords
+# like _is_investigation uses) so ordinary content questions ("is Dune on
+# plex", "what's the queue") never trip it.
+_STATUS_INTENT_RE = re.compile(
+    r"\b(full status|status report|run (the )?checks?|run a? ?check cycle|check cycle|how is everything|status check)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_status_request(text: str) -> bool:
+    return bool(_STATUS_INTENT_RE.search(text or ""))
 
 
 POLL_TIMEOUT_S = 30
@@ -661,6 +677,19 @@ async def _handle_message(
     `force_sections` pre-activates prompt/tool sections regardless of
     keyword matching (the photo path needs library+web loaded even though
     the synthesized task string may not hit the keyword lists)."""
+    if _is_status_request(text):
+        # Local imports: monitor imports telegram_bot (DEFAULT_BOT_MODEL) at
+        # module load, so importing it back at the top here would be a
+        # circular import.
+        from seedbox_mcp.monitor import run_monitor_cycle
+        from seedbox_mcp.telegram import send_message_html
+        from seedbox_mcp.triage import render_triage
+
+        findings = await run_monitor_cycle()
+        rendered, _markup = render_triage(findings)
+        await send_message_html(token, chat_id, rendered)
+        return state
+
     active_sections = set(state.get("active_sections") or [])
     if force_sections:
         active_sections |= force_sections
