@@ -609,6 +609,54 @@ _PUNT_FALLBACK = (
     "Sorry, I couldn't finish that one just now. Ask me again and I'll get you an answer right away."
 )
 
+# Blame-user guard: catches the person disputing an availability claim the bot
+# just made ("it's not there", "can't find it"), catches the bot's own prior
+# claim that something was available, and catches the bot's current reply if
+# it pins the problem on the person instead of re-verifying. Ghost records
+# happen (Jellyseerr can lag reality after a Plex purge) and when they do the
+# honest move is to check again, not gaslight the person about their device.
+_DISPUTE_RE = re.compile(
+    r"(not there|isn['’]t there|not on plex|isn['’]t on plex|aint on plex|ain['’]t on plex"
+    r"|can['’]?t find|cant find|can['’]?t see|cant see|doesn['’]?t show|doesnt show"
+    r"|nothing shows up|nothing there|missing|doesn['’]?t work|doesnt work"
+    r"|not available|isn['’]t available|isn['’]t showing up|isnt showing up"
+    r"|it['’]s not showing|its not showing)",
+    re.IGNORECASE,
+)
+
+_PRIOR_CLAIM_RE = re.compile(
+    r"(on plex|ready to watch|already available|already on plex"
+    r"|streamable now|you can watch it|(?:is|['’]s) available|is there"
+    r"|in the library|in your library|already in the library)",
+    re.IGNORECASE,
+)
+
+_BLAME_USER_RE = re.compile(
+    r"(playback issue|your end|setting on your end|settings on your end"
+    r"|on your end|your device|your app|your client"
+    r"|message the owner|contact the owner|reach out to the owner"
+    r"|troubleshoot on your side|check your)",
+    re.IGNORECASE,
+)
+
+_BLAME_USER_CONTINUATION = (
+    "(system note, the person did not say this: your last reply blamed the person "
+    "for a bug — 'playback issue', 'setting on your end', 'contact the owner' — "
+    "without first re-verifying yourself. A ghost record in Jellyseerr is a real "
+    "thing (a title marked available but the files were deleted). The honest move: "
+    "call jellyseerr_search again on the title THIS TURN. If streamable_now is "
+    "false, apologize plainly and offer to request it. If streamable_now is still "
+    "true but the person says they can't find it, that's likely a ghost record — "
+    "tell them plainly that the library says it's there but you can't confirm "
+    "right now and you'll let the owner know. NEVER tell them it's their device, "
+    "their settings, their app, or their end. Do it NOW with a real tool call.)"
+)
+
+_BLAME_USER_FALLBACK = (
+    "Sorry, I got confused there. Let me be straight: I don't have solid proof "
+    "it's on Plex right now. If you want, I can request it fresh."
+)
+
 
 async def _handle_message(
     settings: FriendBotSettings,
@@ -678,6 +726,48 @@ async def _handle_message(
             # still punting after two forced continuations — be honest instead
             logger.error("punt persisted after %d continuations; sending honest fallback", attempts)
             reply = _PUNT_FALLBACK
+
+        # Blame-user guard: if the user is disputing an availability claim the bot
+        # just made, force the bot to re-verify with a live tool call instead of
+        # blaming the user for it (e.g. "might be a playback issue on your end").
+        # Ghosts happen — Jellyseerr can lag reality after a Plex purge — and
+        # when they do, the honest move is to check again, not gaslight the user.
+        prev_bot_msg = ""
+        history = state.get("history", []) or []
+        for msg in reversed(history):
+            if isinstance(msg, dict) and msg.get("role") == "assistant" and msg.get("content"):
+                prev_bot_msg = str(msg["content"])
+                break
+
+        user_disputes = bool(_DISPUTE_RE.search(text or ""))
+        bot_previously_claimed = bool(_PRIOR_CLAIM_RE.search(prev_bot_msg))
+        reply_blames = bool(reply.strip() and _BLAME_USER_RE.search(reply))
+
+        # Trigger: EITHER (user disputes + prior claim + current reply blames)
+        # OR (current reply just blames outright)
+        should_reverify = (user_disputes and bot_previously_claimed) or reply_blames
+
+        blame_attempts = 0
+        while should_reverify and blame_attempts < 2:
+            blame_attempts += 1
+            logger.warning(
+                "blame-user pattern detected (attempt %d): user_disputes=%s bot_claimed=%s reply_blames=%s reply=%r",
+                blame_attempts, user_disputes, bot_previously_claimed, reply_blames, reply[:200],
+            )
+            reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
+                _BLAME_USER_CONTINUATION,
+                history=new_history,
+                pending_action=new_pending_action,
+                known_entity_ids=new_known_entity_ids,
+                **turn_kwargs,
+            )
+            logger.info("blame-guard continuation reply: %r", reply)
+            reply_blames = bool(reply.strip() and _BLAME_USER_RE.search(reply))
+            should_reverify = reply_blames  # re-check only the reply on subsequent passes
+
+        if reply.strip() and _BLAME_USER_RE.search(reply):
+            logger.error("blame-user pattern persisted after %d continuations; sending honest fallback", blame_attempts)
+            reply = _BLAME_USER_FALLBACK
     except Exception:
         logger.exception("agent turn failed for message: %r", text)
         await send_message(token, chat_id, "Something went wrong there, try asking again?")
