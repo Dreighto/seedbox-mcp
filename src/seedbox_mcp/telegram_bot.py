@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
-from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
+from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands, answer_callback
 from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
@@ -21,7 +21,8 @@ from seedbox_mcp.chat.ollama_ai import (
     trim_history,
 )
 from seedbox_mcp.config import Settings
-from seedbox_mcp.telegram import TELEGRAM_API, send_message
+from seedbox_mcp.telegram import TELEGRAM_API, send_message, send_message_html
+from seedbox_mcp.triage import Finding, load_finding, render_finding_detail
 
 logger = logging.getLogger("seedbox_mcp.telegram_bot")
 
@@ -874,6 +875,60 @@ async def _handle_message(
     )
 
 
+async def _run_finding_action(settings: BotSettings, token: str, chat_id: int, finding: Finding, action: str) -> None:
+    """Runs a targeted one-shot agent turn to act on a single digest/monitor
+    finding (the operator tapped "Fix it" or "Escalate" on a report), then
+    replies with what happened. Reuses digest.SYSTEM_PROMPT so the same
+    Tier 1 confirm=false-then-confirm=true discipline and escalate_to_worker
+    usage apply here as in the scheduled digest — a button tap is not a
+    softer safety path than the digest's own autonomous fixes."""
+    from seedbox_mcp.digest import DIGEST_ACTION_TOOLS, SYSTEM_PROMPT as DIGEST_SYSTEM_PROMPT
+
+    detail = (
+        f"Title: {finding.title}\nReason: {finding.reason}\n"
+        f"Recommendation: {finding.recommendation}\nEvidence: {finding.evidence}"
+    )
+    if action == "fix":
+        task = (
+            "The operator tapped 'Fix it' on this finding from an earlier report:\n"
+            f"{detail}\n\n"
+            "Take the appropriate Tier 1 action now. Preview with confirm=false first, "
+            "verify the preview is correct, then call again with confirm=true. Reply "
+            "with exactly what you did, in one or two sentences. If no Tier 1 tool "
+            "actually applies here, say so plainly instead of forcing an unrelated action."
+        )
+        allowed_tools = READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS
+        action_tools = DIGEST_ACTION_TOOLS
+        escalation_tools = None
+    else:
+        task = (
+            "The operator tapped 'Escalate' on this finding from an earlier report:\n"
+            f"{detail}\n\n"
+            "Call escalate_to_worker with a clear description of this problem. Reply "
+            "confirming you did, in one sentence."
+        )
+        allowed_tools = READ_ONLY_TOOLS | ESCALATION_TOOLS
+        action_tools = set()
+        escalation_tools = ESCALATION_TOOLS
+
+    mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
+    try:
+        reply, _history, _pending_action, _known_entity_ids = await run_agent_turn(
+            task,
+            system_prompt=DIGEST_SYSTEM_PROMPT,
+            mcp_client=mcp_client,
+            model=settings.ollama_bot_model,
+            allowed_tools=allowed_tools,
+            action_tools=action_tools,
+            escalation_tools=escalation_tools,
+            ollama_url=settings.ollama_url,
+        )
+    except Exception:
+        logger.exception("finding action turn failed (action=%s, finding=%s)", action, finding.id)
+        reply = "Something went wrong running that — check the logs."
+    await send_message(token, chat_id, reply)
+
+
 async def _handle_photo_message(
     settings: BotSettings, token: str, chat_id: int, photo_sizes: list[dict[str, Any]], caption: str, state: ChatState
 ) -> ChatState:
@@ -991,6 +1046,42 @@ async def _handle_photo_message(
     )
 
 
+async def _handle_callback(settings: BotSettings, token: str, allowed_chat_id: int, callback: dict[str, Any]) -> None:
+    """Handles a tap on a digest/monitor/status report's inline button. The
+    button rows are `dgf:{run_id}:{finding_id}:{action}` (see
+    triage._finding_buttons) — this is the only place that string gets
+    parsed back apart."""
+    callback_id = callback["id"]
+    data = callback.get("data") or ""
+    chat_id = (callback.get("message") or {}).get("chat", {}).get("id")
+    if chat_id != allowed_chat_id or not data.startswith("dgf:"):
+        await answer_callback(token, callback_id)
+        return
+
+    parts = data.split(":", 3)
+    if len(parts) != 4:
+        await answer_callback(token, callback_id, "Malformed button, ignoring.")
+        return
+    _, run_id, finding_id, action = parts
+
+    finding: Finding | None = load_finding(run_id, finding_id)
+    if finding is None:
+        await answer_callback(token, callback_id, "That report has expired.")
+        return
+
+    if action == "more":
+        await answer_callback(token, callback_id)
+        await send_message_html(token, allowed_chat_id, render_finding_detail(finding))
+        return
+
+    if action not in ("fix", "esc"):
+        await answer_callback(token, callback_id, "Unknown action.")
+        return
+
+    await answer_callback(token, callback_id, "On it...")
+    await _run_finding_action(settings, token, allowed_chat_id, finding, action)
+
+
 async def run_bot() -> None:
     settings = BotSettings()  # type: ignore[call-arg]
     if not settings.nas_ops_telegram_bot_token or not settings.nas_ops_telegram_allowed_chat_id:
@@ -1030,6 +1121,10 @@ async def run_bot() -> None:
 
             for update in updates:
                 offset = update["update_id"] + 1
+                callback = update.get("callback_query")
+                if callback is not None:
+                    await _handle_callback(settings, token, allowed_chat_id, callback)
+                    continue
                 message = update.get("message") or {}
                 chat = message.get("chat") or {}
                 text = message.get("text")

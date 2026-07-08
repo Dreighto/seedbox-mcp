@@ -18,7 +18,15 @@ from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
-from seedbox_mcp.triage import FINDINGS_INSTRUCTION, Finding, fingerprint, parse_findings, render_triage, slugify
+from seedbox_mcp.triage import (
+    FINDINGS_INSTRUCTION,
+    Finding,
+    fingerprint,
+    parse_findings,
+    render_triage,
+    save_run,
+    slugify,
+)
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
@@ -592,7 +600,8 @@ def main() -> None:
     # Alert-once-then-quiet: don't re-push an identical unresolved alert every
     # cycle. --force-alert-test bypasses the dedup (it's a manual test).
     should_push, new_state = _alert_decision(fp, _load_alert_state(), time.time())
-    text, _markup = render_triage(findings)
+    run_id = save_run(findings)
+    text, markup = render_triage(findings, run_id=run_id)
     # Keep the rendered report TEXT alongside the dedup hash: the interactive
     # bot injects the active alert into its context, so when the operator
     # replies "investigate and fix it" the bot knows what "it" is (the alert
@@ -614,6 +623,7 @@ def main() -> None:
                     settings.nas_ops_telegram_bot_token.get_secret_value(),
                     settings.nas_ops_telegram_allowed_chat_id,
                     text,
+                    reply_markup=markup,
                 )
             )
         else:

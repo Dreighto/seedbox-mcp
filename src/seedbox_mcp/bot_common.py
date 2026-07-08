@@ -29,6 +29,19 @@ async def _set_bot_commands(token: str) -> None:
         logger.warning("setMyCommands failed (non-fatal): %s %s", resp.status_code, resp.text)
 
 
+async def answer_callback(token: str, callback_id: str, text: str = "") -> None:
+    """Dismisses an inline-keyboard button's loading spinner, optionally
+    showing a brief toast. Best-effort — a failed toast shouldn't stop the
+    caller from doing the actual work the tap requested."""
+    async with httpx.AsyncClient(timeout=10.0) as http:
+        resp = await http.post(
+            f"{TELEGRAM_API}/bot{token}/answerCallbackQuery",
+            json={"callback_query_id": callback_id, "text": text},
+        )
+    if resp.is_error:
+        logger.warning("answerCallbackQuery failed (non-fatal): %s %s", resp.status_code, resp.text)
+
+
 async def _download_telegram_photo(token: str, file_id: str) -> bytes:
     async with httpx.AsyncClient(timeout=20.0) as http:
         resp = await http.get(f"{TELEGRAM_API}/bot{token}/getFile", params={"file_id": file_id})

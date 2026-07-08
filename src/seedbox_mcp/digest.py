@@ -17,7 +17,7 @@ from seedbox_mcp.chat.ollama_ai import (
 from seedbox_mcp.config import Settings
 from seedbox_mcp.graduation import graduation_nudge
 from seedbox_mcp.telegram import send_message_html
-from seedbox_mcp.triage import FINDINGS_INSTRUCTION, parse_findings, render_triage
+from seedbox_mcp.triage import FINDINGS_INSTRUCTION, parse_findings, render_triage, save_run
 
 logger = logging.getLogger("seedbox_mcp.digest")
 
@@ -182,15 +182,19 @@ def main() -> None:
     result = asyncio.run(run_digest(args.task, args.model))
 
     findings = parse_findings(result)
-    rendered, _markup = render_triage(findings)
+    run_id = save_run(findings)
+    rendered, markup = render_triage(findings, run_id=run_id)
 
     # Deterministic autonomy nudge appended out of the LLM's hands: when a fix
     # tool has earned graduation (or has failures worth a look), tell the
     # operator here rather than hoping the model notices. Silent otherwise.
+    # Kept visually separate (own line, own emoji) from the health findings
+    # above it — it's a different kind of thing (a governance question, not
+    # a NAS status item) and reads confusingly folded into the same block.
     nudge = graduation_nudge()
     if nudge:
         nudge_html = re.sub(r"\*(.+?)\*", r"<b>\1</b>", html.escape(nudge))
-        rendered = f"{rendered}\n\n{nudge_html}"
+        rendered = f"{rendered}\n\n\U0001f4ca {nudge_html}"
 
     print(rendered)
 
@@ -202,6 +206,7 @@ def main() -> None:
                     settings.nas_ops_telegram_bot_token.get_secret_value(),
                     settings.nas_ops_telegram_allowed_chat_id,
                     rendered,
+                    reply_markup=markup,
                 )
             )
         else:
