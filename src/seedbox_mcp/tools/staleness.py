@@ -37,7 +37,7 @@ async def staleness_report(
             )
         bounded = clamp_limit(limit)
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
-        sections = _sections(services, media_type)
+        sections = await _sections(services, media_type)
         plex_items = []
         for section in sections:
             plex_items.extend(await _get_all_plex_items(services, section))
@@ -174,12 +174,24 @@ def _parse_iso(value: Any) -> float | None:
     return parsed.timestamp()
 
 
-def _sections(services: Services, media_type: str) -> list[str]:
+async def _sections(services: Services, media_type: str) -> list[str]:
+    # Discover every Plex library of the relevant type rather than only the
+    # single configured display name. A movie can live in "Movies",
+    # "Anime Movies", or "4K Movies" (all Plex type "movie"); reconciling
+    # Radarr/Sonarr state against just one of them falsely reports the rest
+    # as missing from Plex. Fall back to the configured names if discovery
+    # fails so the report still runs when Plex metadata is unavailable.
+    try:
+        by_type = await services.plex.get_sections_by_type()
+    except Exception:
+        by_type = {}
+    movie_sections = by_type.get("movie") or [services.settings.plex_movie_section]
+    show_sections = by_type.get("show") or [services.settings.plex_tv_section]
     if media_type == "movies":
-        return [services.settings.plex_movie_section]
+        return list(dict.fromkeys(movie_sections))
     if media_type == "tv":
-        return [services.settings.plex_tv_section]
-    return [services.settings.plex_movie_section, services.settings.plex_tv_section]
+        return list(dict.fromkeys(show_sections))
+    return list(dict.fromkeys([*movie_sections, *show_sections]))
 
 
 def _before(value: str | None, cutoff: datetime) -> bool:

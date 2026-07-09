@@ -518,6 +518,14 @@ class _StalenessPlex:
     async def get_sections(self) -> list[str]:
         return ["Movies", "TV Shows"]
 
+    async def get_sections_by_type(self) -> dict[str, list[str]]:
+        out: dict[str, list[str]] = {}
+        for item in self._items:
+            sections = out.setdefault(item.get("type"), [])
+            if item.get("section") not in sections:
+                sections.append(item.get("section"))
+        return out
+
     async def get_basic_library_items(self, section_name: str, limit: int, offset: int = 0) -> list[dict]:
         self.offsets.append(offset)
         return [item for item in self._items if item.get("section") == section_name][offset : offset + limit]
@@ -608,6 +616,51 @@ async def test_staleness_report_missing_from_plex_matches_by_file_path_not_title
     assert result["ok"] is True
     missing_ids = {item["radarr_id"] for item in result["data"]["managed_missing_from_plex"]}
     assert missing_ids == {99}
+
+
+@pytest.mark.asyncio
+async def test_staleness_report_missing_ignores_movies_in_secondary_plex_sections(services: Services) -> None:
+    # Radarr manages both /movies and /anime-movies; Plex splits these into
+    # separate libraries ("Movies", "Anime Movies"). A movie indexed in the
+    # Anime Movies library must NOT be reported missing from Plex just because
+    # it isn't in the primary "Movies" section — otherwise every anime movie
+    # (100+ in the real library) is a false positive.
+    services.radarr.routes[("GET", "/api/v3/movie")] = [
+        {
+            "id": 7,
+            "title": "Akira",
+            "year": 1988,
+            "hasFile": True,
+            "movieFile": {"path": "/anime-movies/Akira (1988)/akira.mkv"},
+        },
+        {
+            "id": 8,
+            "title": "Really Missing",
+            "year": 2020,
+            "hasFile": True,
+            "movieFile": {"path": "/movies/Really Missing (2020)/rm.mkv"},
+        },
+    ]
+    services.sonarr.routes[("GET", "/api/v3/series")] = []
+    plex_items = [
+        {
+            "type": "movie",
+            "title": "Akira",
+            "year": 1988,
+            "section": "Anime Movies",
+            "rating_key": "300",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "last_viewed_at": None,
+            "view_count": 0,
+            "size_on_disk_gb": 5.0,
+            "file_paths": ["/anime-movies/Akira (1988)/akira.mkv"],
+        },
+    ]
+    object.__setattr__(services, "plex", _StalenessPlex(plex_items))
+    result = await staleness_report(services, media_type="movies", older_than_days=1)
+    assert result["ok"] is True
+    missing_ids = {item["radarr_id"] for item in result["data"]["managed_missing_from_plex"]}
+    assert missing_ids == {8}
 
 
 @pytest.mark.asyncio

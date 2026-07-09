@@ -50,6 +50,9 @@ class FakePlexClient:
     async def get_sections(self) -> list[str]:
         return ["Movies", "TV Shows"]
 
+    async def get_sections_by_type(self) -> dict[str, list[str]]:
+        return {"movie": ["Movies"], "show": ["TV Shows"]}
+
     async def get_sessions(self) -> list[dict[str, Any]]:
         return [{"title": "Heat", "type": "movie", "state": "playing"}]
 
