@@ -46,6 +46,19 @@ class PlexClient:
         server = self._server()
         return [section.title for section in server.library.sections()]
 
+    async def get_sections_by_type(self) -> dict[str, list[str]]:
+        # Group section titles by Plex library type ("movie", "show", ...).
+        # A single *arr root folder often maps to several Plex libraries
+        # (e.g. Radarr manages /movies and /anime-movies, which Plex splits
+        # into separate "Movies" and "Anime Movies" libraries), so callers
+        # that reconcile *arr state against Plex must consult every library
+        # of the relevant type, not just the primary configured one.
+        server = self._server()
+        result: dict[str, list[str]] = {}
+        for section in server.library.sections():
+            result.setdefault(section.type, []).append(section.title)
+        return result
+
     async def get_sessions(self) -> list[dict[str, Any]]:
         # Read /status/sessions raw rather than via plexapi's session
         # objects — the raw payload carries the bottleneck-relevant fields
