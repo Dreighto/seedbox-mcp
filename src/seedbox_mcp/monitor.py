@@ -15,6 +15,7 @@ from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
+from seedbox_mcp.quality_guard import run_quality_guard
 from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
@@ -359,6 +360,8 @@ _FIX_MARKERS = (
     "restart succeeded",
     "back up",
     "verified",
+    "auto-corrected bad imports",
+    "added a permanent",
 )
 
 
@@ -483,6 +486,7 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     queue_fix_note = None
     strike_note = None
     recovery_note = None
+    quality_guard_note = None
     if not read_only:
         queue_fix_note = await _deterministic_queue_resume(mcp_client)
         # Strike-based stalled-download fixer — deterministic, same "keep it
@@ -494,6 +498,17 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
             strike_note = await run_download_strike_check(settings, time.time())
         except Exception:
             logger.exception("download strike check failed (non-fatal)")
+
+        # Post-import quality re-validation (deterministic, same rationale):
+        # Radarr/Sonarr's profile "allowed" quality gate isn't re-checked
+        # once the real file is inspected on import, so a mislabeled release
+        # can land as BR-DISK/Remux/etc despite the profile disallowing it.
+        # Undoing that needs no judgment call once policy is defined, so it
+        # runs here rather than leaving it to the LLM to notice and decide.
+        try:
+            quality_guard_note = await run_quality_guard(settings, time.time())
+        except Exception:
+            logger.exception("quality guard check failed (non-fatal)")
 
         # Auto-restart a down media container (deterministic, cooldown-guarded).
         try:
@@ -535,7 +550,7 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
     llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
-    return _notes_to_findings(queue_fix_note, strike_note, recovery_note) + llm_findings
+    return _notes_to_findings(queue_fix_note, strike_note, quality_guard_note, recovery_note) + llm_findings
 
 
 # Alert-dedup state: the fingerprint of the last alert we actually pushed,

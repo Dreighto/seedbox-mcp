@@ -15,6 +15,7 @@ todo_human.md
 .telegram_bot_friend_history.json
 .monitor_download_strikes.json
 .monitor_alert_state.json
+.monitor_quality_guard_state.json
 .telegram_bot_friend_pending.json
 .telegram_bot_friend_allowlist.json
 .friend_request_tracking.json

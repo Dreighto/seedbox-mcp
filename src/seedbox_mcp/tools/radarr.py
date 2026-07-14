@@ -22,7 +22,7 @@ RADARR_QUEUE_ACTIONS = {"remove", "blocklist"}
 RADARR_RESEARCH_COMMANDS = {
     "search": "MoviesSearch",
     "refresh": "RefreshMovie",
-    "scan_downloaded": "DownloadedMoviesScan",
+    "scan_downloaded": "RescanMovie",
 }
 
 
@@ -256,9 +256,7 @@ async def radarr_research_movie(
                 {"allowed": sorted(RADARR_RESEARCH_COMMANDS)},
             )
         movie = await services.radarr.get(f"/api/v3/movie/{radarr_id}")
-        payload = (
-            {"name": command_name} if mode == "scan_downloaded" else {"name": command_name, "movieIds": [radarr_id]}
-        )
+        payload = {"name": command_name, "movieIds": [radarr_id]}
         preview = {"movie": compact_movie(movie) if isinstance(movie, dict) else None, "command": payload}
         if not confirm:
             return ToolResponse.success({"dry_run": True, "would_run": preview})

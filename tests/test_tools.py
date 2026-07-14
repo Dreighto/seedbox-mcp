@@ -366,12 +366,16 @@ async def test_radarr_research_confirm_posts_command(services: Services) -> None
 
 
 @pytest.mark.asyncio
-async def test_radarr_research_scan_downloaded_omits_movie_ids(services: Services) -> None:
+async def test_radarr_research_scan_downloaded_targets_the_movie(services: Services) -> None:
+    # Regression test: scan_downloaded used to map to Radarr's
+    # DownloadedMoviesScan command with no movieIds at all, which Radarr
+    # rejects outright ("A path must be provided") since that command scans
+    # the whole library, not one movie. Fixed 2026-07-13 to use RescanMovie,
+    # Radarr's actual per-movie rescan command, scoped like every other mode.
     result = await radarr_research_movie(services, radarr_id=1, mode="scan_downloaded", confirm=True)
     assert result["ok"] is True
     _, payload = services.radarr.posts[0]
-    assert payload == {"name": "DownloadedMoviesScan"}
-    assert "movieIds" not in payload
+    assert payload == {"name": "RescanMovie", "movieIds": [1]}
 
 
 @pytest.mark.asyncio

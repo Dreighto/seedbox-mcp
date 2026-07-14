@@ -93,18 +93,20 @@ async def staleness_report(
         if include_missing:
             plex_titles = {str(item.get("title", "")).casefold() for item in plex_items}
             plex_file_paths = {path for item in plex_items for path in item.get("file_paths") or []}
-            data["managed_missing_from_plex"] = (
-                [
+            missing: list[dict[str, Any]] = []
+            if media_type in ("movies", "all"):
+                missing += [
                     compact_movie(item)
                     for item in radarr_movies
                     if not item.get("hasFile") or not _movie_file_in_plex(item, plex_file_paths)
                 ]
-                + [
+            if media_type in ("tv", "all"):
+                missing += [
                     compact_series(item)
                     for item in sonarr_series
                     if str(item.get("title", "")).casefold() not in plex_titles
                 ]
-            )[:bounded]
+            data["managed_missing_from_plex"] = missing[:bounded]
         data["queue_warnings"] = [
             compact_queue_item("radarr", item) for item in _records(radarr_queue) if _stuck(item)
         ][:bounded] + [compact_queue_item("sonarr", item) for item in _records(sonarr_queue) if _stuck(item)][:bounded]
