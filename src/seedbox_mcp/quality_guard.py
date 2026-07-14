@@ -41,16 +41,18 @@ HARD_BLOCK_SCORE = -1000
 # from any source.
 REPEAT_OFFENDER_THRESHOLD = 2
 
-# Defense in depth: these quality tiers are never acceptable regardless of
-# what a profile's custom formats say, in case a profile is ever misconfigured
-# again the way the "Any" profile was.
+# Defense in depth: these quality tiers are NEVER acceptable regardless of
+# what a profile's custom formats say — they are raw disc images (BR-DISK)
+# or DVD folder dumps (DVD-R), genuinely unplayable in Plex, with zero
+# legitimate use case. Deliberately NOT including CAM/TELESYNC/TELECINE/
+# WORKPRINT/REGIONAL/DVDSCR here: those are low quality but playable, and
+# nasdoom_grab_release (telegram_bot_friend.py) exists specifically to let a
+# friend deliberately accept one of those for a title with nothing better
+# out yet — that tool intentionally bypasses the quality profile with
+# explicit consent (see its "would_grab" note). Blocking that tier here
+# would have this guard silently undo a friend's consented choice within
+# one monitor cycle. Only hard-block what's unplayable outright.
 _QUALITY_BAD_TIERS = {
-    "WORKPRINT",
-    "CAM",
-    "TELESYNC",
-    "TELECINE",
-    "REGIONAL",
-    "DVDSCR",
     "DVD-R",
     "BR-DISK",
 }

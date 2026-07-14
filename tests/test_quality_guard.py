@@ -43,3 +43,15 @@ def test_repeat_offender_threshold_is_low_enough_to_actually_fire() -> None:
     # Sanity guard against an accidental future edit that sets this so high
     # the exact-title-block escape hatch never triggers in practice.
     assert 1 <= REPEAT_OFFENDER_THRESHOLD <= 5
+
+
+def test_theatrical_rip_tiers_are_not_hard_blocked() -> None:
+    # Regression guard: nasdoom_grab_release (telegram_bot_friend.py) lets a
+    # friend deliberately accept a CAM/TELESYNC/WORKPRINT copy for a title
+    # with nothing better out yet, explicitly bypassing the quality profile
+    # with the requester's consent. These tiers are playable, just low
+    # quality — unlike BR-DISK/DVD-R, which are genuinely unplayable disc
+    # dumps with no legitimate use case. The guard must never treat a
+    # consented theatrical-rip grab as a violation to undo.
+    for tier in ("CAM", "TELESYNC", "TELECINE", "WORKPRINT", "DVDSCR", "REGIONAL"):
+        assert evaluate_import(tier, [], 0) is None, f"{tier} should not be hard-blocked"
