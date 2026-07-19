@@ -84,7 +84,26 @@ async def staleness_report(
             )
         if include_unmanaged:
             managed_titles = {str(item.get("title", "")).casefold() for item in [*radarr_movies, *sonarr_series]}
-            unmanaged_raw = [item for item in plex_items if str(item.get("title", "")).casefold() not in managed_titles]
+            # Title-only matching flags items whose Plex title merely differs
+            # in spelling from Radarr/Sonarr's ("Se7en" vs "Seven", "Star Wars"
+            # vs "Star Wars: Episode IV - A New Hope") — on the real library
+            # that was ~110 of 189 "unmanaged" hits. Cross-check by movie file
+            # path / show folder path before calling something unmanaged.
+            radarr_file_paths = {
+                path for m in radarr_movies if (path := (m.get("movieFile") or {}).get("path"))
+            }
+            sonarr_folder_paths = {str(s["path"]).rstrip("/") for s in sonarr_series if s.get("path")}
+
+            def _managed(item: dict[str, Any]) -> bool:
+                if str(item.get("title", "")).casefold() in managed_titles:
+                    return True
+                if any(path in radarr_file_paths for path in item.get("file_paths") or []):
+                    return True
+                return any(
+                    str(path).rstrip("/") in sonarr_folder_paths for path in item.get("folder_paths") or []
+                )
+
+            unmanaged_raw = [item for item in plex_items if not _managed(item)]
             data["plex_unmanaged"] = _sort_and_slice(
                 [compact_plex_item(item) for item in unmanaged_raw],
                 sort,

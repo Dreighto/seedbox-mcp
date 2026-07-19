@@ -200,6 +200,13 @@ class PlexClient:
             "duration_minutes": self._duration_minutes(getattr(item, "duration", None)),
             "size_on_disk_gb": round(total_size / 1024**3, 2) if total_size else None,
             "file_paths": [cast(str, part.file) for part in parts if getattr(part, "file", None)],
+            # Shows carry no Media/Part in section listings; their on-disk
+            # identity is the library folder (plexapi Location tags).
+            "folder_paths": (
+                [cast(str, loc) for loc in getattr(item, "locations", None) or []]
+                if getattr(item, "type", None) == "show"
+                else []
+            ),
             "directors": directors,
         }
 

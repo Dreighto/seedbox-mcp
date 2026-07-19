@@ -623,6 +623,60 @@ async def test_staleness_report_missing_from_plex_matches_by_file_path_not_title
 
 
 @pytest.mark.asyncio
+async def test_staleness_report_unmanaged_matches_by_path_not_title(services: Services) -> None:
+    # Same title-drift problem in the other direction: a Plex item whose
+    # displayed title differs from Radarr/Sonarr's must not be reported
+    # unmanaged when its file/folder path proves it is managed.
+    services.radarr.routes[("GET", "/api/v3/movie")] = [
+        {
+            "id": 48,
+            "title": "Se7en",
+            "year": 1995,
+            "hasFile": True,
+            "movieFile": {"path": "/movies/Se7en (1995)/file.mkv"},
+        },
+    ]
+    services.sonarr.routes[("GET", "/api/v3/series")] = [
+        {"id": 5, "title": "The Office (US)", "year": 2005, "path": "/tv/The Office (US) (2005)/"},
+    ]
+    plex_items = [
+        {
+            "type": "movie",
+            "title": "Seven",
+            "year": 1995,
+            "section": "Movies",
+            "rating_key": "300",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "file_paths": ["/movies/Se7en (1995)/file.mkv"],
+        },
+        {
+            "type": "show",
+            "title": "The Office",
+            "year": 2005,
+            "section": "TV Shows",
+            "rating_key": "301",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "file_paths": [],
+            "folder_paths": ["/tv/The Office (US) (2005)"],
+        },
+        {
+            "type": "movie",
+            "title": "Truly Unmanaged",
+            "year": 2021,
+            "section": "Movies",
+            "rating_key": "302",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "file_paths": ["/movies/Truly Unmanaged (2021)/file.mkv"],
+        },
+    ]
+    object.__setattr__(services, "plex", _StalenessPlex(plex_items))
+    result = await staleness_report(services, media_type="all", older_than_days=1)
+    assert result["ok"] is True
+    unmanaged_titles = {item["title"] for item in result["data"]["plex_unmanaged"]}
+    assert unmanaged_titles == {"Truly Unmanaged"}
+
+
+@pytest.mark.asyncio
 async def test_staleness_report_missing_ignores_movies_in_secondary_plex_sections(services: Services) -> None:
     # Radarr manages both /movies and /anime-movies; Plex splits these into
     # separate libraries ("Movies", "Anime Movies"). A movie indexed in the
