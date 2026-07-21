@@ -95,7 +95,16 @@ MONITOR_READ_ONLY_TOOLS: set[str] = {
 # they ARE autonomous now, so the graduation gate counts them as such.
 # nas_service_restart GRADUATED here 2026-07-02 after clearing the gate:
 # 7 recent clean restarts across 5 distinct services, 0 failures.
-MONITOR_DETERMINISTIC_TOOLS: set[str] = {"nasdoom_queue_command", "nas_service_restart"}
+# sonarr_queue_action GRADUATED here 2026-07-21 (operator approved): it was
+# already running unattended this whole time via run_download_strike_check's
+# strike-threshold remove+blocklist, which calls the arr queue-delete
+# endpoint directly and records outcomes under the "sonarr_queue_action"
+# audit name — the graduation gate just didn't know it, since this set (not
+# the audit log) is what analyze_readiness treats as "already autonomous".
+# 20 recent clean fixes across 20 distinct queue items, 0 failures.
+# radarr_queue_action stays off this set — same strike fixer covers Radarr
+# too, but it has 0 real executions yet, so there's nothing to graduate.
+MONITOR_DETERMINISTIC_TOOLS: set[str] = {"nasdoom_queue_command", "nas_service_restart", "sonarr_queue_action"}
 
 # Don't re-restart the same service within this window: if a restart didn't
 # make it stick, restarting again every cycle is a loop, not a fix — leave it
