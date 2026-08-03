@@ -29,7 +29,7 @@ logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
 # (does this get auto-added or does it need the operator's eyes on it),
 # so it gets the reliable model from the start rather than shipping on
 # the fast one and hoping.
-DEFAULT_FRIEND_BOT_MODEL = "qwen3-coder:480b-cloud"
+DEFAULT_FRIEND_BOT_MODEL = "gpt-oss:20b-cloud"
 POLL_TIMEOUT_S = 30
 
 # Deliberately its own small, curated tool set instead of sharing

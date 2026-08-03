@@ -43,7 +43,7 @@ DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
 # timeout. Same tradeoff logic as monitor.py's model choice — this path
 # isn't latency-sensitive enough to justify the smaller model's
 # unreliability here.
-PHOTO_IDENTIFY_MODEL = "qwen3-coder:480b-cloud"
+PHOTO_IDENTIFY_MODEL = "qwen3.5:397b-cloud"
 PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
 
 # Investigation/diagnosis is inherently multi-step — check status, pull logs,
