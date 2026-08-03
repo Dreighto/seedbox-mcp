@@ -16,6 +16,7 @@ from seedbox_mcp.chat.ollama_ai import (
 )
 from seedbox_mcp.config import Settings
 from seedbox_mcp.graduation import graduation_nudge
+from seedbox_mcp.model_registry import DEFAULT_DIGEST_MODEL as _DEFAULT_DIGEST_MODEL_ENTRY
 from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.triage import FINDINGS_INSTRUCTION, parse_findings, render_triage, save_run
 
@@ -24,7 +25,10 @@ logger = logging.getLogger("seedbox_mcp.digest")
 # Cloud-tagged, flat-rate under the operator's Ollama Pro subscription — see
 # reference: smaller/faster models for latency-sensitive replies, bigger ones
 # for batch judgment calls where quality matters more than turnaround.
-DEFAULT_DIGEST_MODEL = "deepseek-v4-pro:cloud"
+# Sourced from model_registry — see there for cross-file rationale — so this
+# string exists in exactly one place; it's what model_health's monitor-cycle
+# liveness check sweeps.
+DEFAULT_DIGEST_MODEL = _DEFAULT_DIGEST_MODEL_ENTRY.name
 
 SYSTEM_PROMPT = """\
 You are a NAS housekeeping assistant. You run on a schedule, not in a chat — \

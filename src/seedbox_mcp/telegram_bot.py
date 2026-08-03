@@ -21,6 +21,10 @@ from seedbox_mcp.chat.ollama_ai import (
     trim_history,
 )
 from seedbox_mcp.config import Settings
+from seedbox_mcp.model_health import check_models
+from seedbox_mcp.model_registry import DEFAULT_BOT_MODEL as _DEFAULT_BOT_MODEL_ENTRY
+from seedbox_mcp.model_registry import INVESTIGATE_MODEL as _INVESTIGATE_MODEL_ENTRY
+from seedbox_mcp.model_registry import PHOTO_IDENTIFY_MODEL as _PHOTO_IDENTIFY_MODEL_ENTRY
 from seedbox_mcp.telegram import TELEGRAM_API, send_message, send_message_html
 from seedbox_mcp.triage import Finding, load_finding, render_finding_detail
 
@@ -30,8 +34,10 @@ logger = logging.getLogger("seedbox_mcp.telegram_bot")
 # big batch model — a few seconds of turnaround reads fine in a chat, and the
 # ollama_ai harness now survives a bad tool call from a weaker model instead
 # of crashing (see chat/ollama_ai.py — this is exactly the model that
-# originally exposed that bug).
-DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
+# originally exposed that bug). Sourced from model_registry (see there for
+# the "why this specific model" reasoning) so this string exists in exactly
+# one place — it's what model_health's startup/monitor liveness checks sweep.
+DEFAULT_BOT_MODEL = _DEFAULT_BOT_MODEL_ENTRY.name
 
 # Poster/cover identification specifically needs more reliable multi-step
 # reasoning (reconstruct garbled OCR fragments, verify with a follow-up
@@ -43,7 +49,7 @@ DEFAULT_BOT_MODEL = "gpt-oss:20b-cloud"
 # timeout. Same tradeoff logic as monitor.py's model choice — this path
 # isn't latency-sensitive enough to justify the smaller model's
 # unreliability here.
-PHOTO_IDENTIFY_MODEL = "qwen3.5:397b-cloud"
+PHOTO_IDENTIFY_MODEL = _PHOTO_IDENTIFY_MODEL_ENTRY.name
 PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
 
 # Investigation/diagnosis is inherently multi-step — check status, pull logs,
@@ -56,7 +62,7 @@ PHOTO_IDENTIFY_MAX_TOOL_ROUNDS = 12
 # actually chain the steps. A simple read ("is everything up", "how's the
 # ad-blocking") stays on the fast model — only diagnostic/fix INTENT trips
 # this. False positives just cost a slower/pricier reply, not a wrong one.
-INVESTIGATE_MODEL = "deepseek-v4-pro:cloud"
+INVESTIGATE_MODEL = _INVESTIGATE_MODEL_ENTRY.name
 INVESTIGATE_MAX_TOOL_ROUNDS = 12
 _INVESTIGATE_KEYWORDS = (
     "why", "investigate", "diagnose", "troubleshoot", "debug", "root cause",
@@ -1096,6 +1102,24 @@ async def run_bot() -> None:
         settings.ollama_bot_model,
         len(chat_states.get(allowed_chat_id, ChatState(history=[])).get("history", [])),
     )
+
+    # Startup liveness check for this bot's own models — catches a retired
+    # cloud model (e.g. qwen3-coder:480b-cloud, retired 2026-07-15 and not
+    # noticed here for 6+ days because the service never crashed, it just
+    # 410'd on every real request) at boot instead of after N silently
+    # failed replies. Best-effort: never blocks startup, a network hiccup
+    # here shouldn't stop the bot from serving otherwise-fine requests.
+    try:
+        problems = await check_models(
+            settings.ollama_url, (_DEFAULT_BOT_MODEL_ENTRY, _PHOTO_IDENTIFY_MODEL_ENTRY, _INVESTIGATE_MODEL_ENTRY)
+        )
+    except Exception:
+        logger.exception("startup model liveness check itself failed (non-fatal)")
+        problems = []
+    if problems:
+        alert = "⚠️ NAS Ops bot started, but a model check failed:\n" + "\n".join(problems)
+        logger.error(alert)
+        await send_message(token, allowed_chat_id, alert)
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:

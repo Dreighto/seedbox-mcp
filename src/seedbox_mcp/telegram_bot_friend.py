@@ -14,6 +14,9 @@ from fastmcp import Client
 from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
 from seedbox_mcp.config import Settings
+from seedbox_mcp.model_health import check_models
+from seedbox_mcp.model_registry import DEFAULT_FRIEND_BOT_MODEL as _DEFAULT_FRIEND_BOT_MODEL_ENTRY
+from seedbox_mcp.notify_operator import send_to_operator
 from seedbox_mcp.telegram import TELEGRAM_API, format_for_telegram, send_message
 
 logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
@@ -28,8 +31,10 @@ logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
 # the monitor's queue-check) — this is a safety-relevant routing decision
 # (does this get auto-added or does it need the operator's eyes on it),
 # so it gets the reliable model from the start rather than shipping on
-# the fast one and hoping.
-DEFAULT_FRIEND_BOT_MODEL = "gpt-oss:20b-cloud"
+# the fast one and hoping. Sourced from model_registry (see there for the
+# "why this specific model" reasoning) so this string exists in exactly one
+# place — it's what model_health's startup/monitor liveness checks sweep.
+DEFAULT_FRIEND_BOT_MODEL = _DEFAULT_FRIEND_BOT_MODEL_ENTRY.name
 POLL_TIMEOUT_S = 30
 
 # Deliberately its own small, curated tool set instead of sharing
@@ -808,6 +813,23 @@ async def run_bot() -> None:
         settings.ollama_friend_bot_model,
         len(allowed_chat_ids),
     )
+
+    # Startup liveness check for this bot's own model — catches a retired
+    # cloud model (e.g. qwen3-coder:480b-cloud, retired 2026-07-15 and not
+    # noticed here for 6+ days because the service never crashed, it just
+    # 410'd on every real message) at boot instead of after N silently
+    # failed replies. Alerted via the operator's own NAS Ops bot, not this
+    # bot's token — the operator may never have messaged this bot, so it
+    # can't push to them directly. Best-effort: never blocks startup.
+    try:
+        problems = await check_models(settings.ollama_url, (_DEFAULT_FRIEND_BOT_MODEL_ENTRY,))
+    except Exception:
+        logger.exception("startup model liveness check itself failed (non-fatal)")
+        problems = []
+    if problems:
+        alert = "⚠️ Friend bot started, but a model check failed:\n" + "\n".join(problems)
+        logger.error(alert)
+        await send_to_operator(alert)
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:

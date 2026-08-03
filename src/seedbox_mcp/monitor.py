@@ -15,6 +15,9 @@ from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings
 from seedbox_mcp.download_strikes import run_download_strike_check
+from seedbox_mcp.model_health import check_models
+from seedbox_mcp.model_registry import ALL_MODELS
+from seedbox_mcp.model_registry import DEFAULT_MONITOR_MODEL as _DEFAULT_MONITOR_MODEL_ENTRY
 from seedbox_mcp.quality_guard import run_quality_guard
 from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
@@ -39,7 +42,9 @@ logger = logging.getLogger("seedbox_mcp.monitor")
 # unfixed. Nobody's waiting live on a background cycle the way they are on
 # an interactive reply, so correctness matters more than the few seconds of
 # latency difference — same tradeoff logic as digest.py's own model choice.
-DEFAULT_MONITOR_MODEL = "deepseek-v4-pro:cloud"
+# Sourced from model_registry — see there for cross-file rationale — so this
+# string exists in exactly one place.
+DEFAULT_MONITOR_MODEL = _DEFAULT_MONITOR_MODEL_ENTRY.name
 
 # Deliberately the ORIGINAL Tier 1 set only — not everything ACTION_TOOLS now
 # covers. Operator's own call (2026-07-01): the monitor may act autonomously
@@ -345,6 +350,26 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
     return "\n".join(notes) if notes else None
 
 
+async def _deterministic_model_liveness_check(ollama_url: str) -> str | None:
+    """Pings every cloud model in model_registry.ALL_MODELS with a real
+    /api/chat call, deterministic (no LLM in the loop) for the same reason
+    as the other checks in this file — this exists specifically because
+    Ollama silently retiring qwen3-coder:480b-cloud (2026-07-15) went
+    unnoticed for 6+ days: every bot kept running, it just 410'd on every
+    real request. That's not something an LLM cycle would reliably catch
+    either (it has no reason to probe a model it isn't itself using), so
+    this covers ALL registered models, not just DEFAULT_MONITOR_MODEL.
+    No cooldown/loop-guard needed here unlike the restart checks above — a
+    dead model can't be "fixed" by retrying, so it just keeps reporting
+    every cycle (throttled by the existing alert-dedup/remind-interval in
+    main(), same as any other persistent unresolved finding) until a human
+    swaps the model string in model_registry.py."""
+    problems = await check_models(ollama_url, ALL_MODELS)
+    if not problems:
+        return None
+    return "\n".join(f"{p} — not auto-fixed, needs escalation." for p in problems)
+
+
 # Markers for lines that must alert a human — checked FIRST, so a bundled
 # note that contains both a real fix and a real problem (e.g. the strike
 # checker's single joined note: "auto-fixed the stalled ones.\nN stuck on
@@ -496,7 +521,16 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     strike_note = None
     recovery_note = None
     quality_guard_note = None
+    model_liveness_note = None
     if not read_only:
+        # Cheap (a handful of trivial pings), so it runs every scheduled
+        # cycle rather than being throttled — see
+        # _deterministic_model_liveness_check's own docstring for why.
+        try:
+            model_liveness_note = await _deterministic_model_liveness_check(settings.ollama_url)
+        except Exception:
+            logger.exception("model liveness check failed (non-fatal)")
+
         queue_fix_note = await _deterministic_queue_resume(mcp_client)
         # Strike-based stalled-download fixer — deterministic, same "keep it
         # out of the LLM's hands" rationale as the queue-resume above:
@@ -559,7 +593,10 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
     llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
-    return _notes_to_findings(queue_fix_note, strike_note, quality_guard_note, recovery_note) + llm_findings
+    return (
+        _notes_to_findings(queue_fix_note, strike_note, quality_guard_note, recovery_note, model_liveness_note)
+        + llm_findings
+    )
 
 
 # Alert-dedup state: the fingerprint of the last alert we actually pushed,
