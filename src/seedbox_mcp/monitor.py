@@ -117,6 +117,15 @@ MONITOR_DETERMINISTIC_TOOLS: set[str] = {"nasdoom_queue_command", "nas_service_r
 RESTART_COOLDOWN_S = 2 * 3600
 MONITOR_RESTART_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_restart_state.json"
 
+# Operator's own call (2026-08-05): flag the media pool by absolute headroom,
+# not percentFull. A fixed percentage threshold drifts as a signal on its own
+# — the same 90%-full pool means 4TB free on today's 40TB array and 8TB free
+# after a future expansion, but "can Sonarr/Radarr still write" only cares
+# about the absolute number. 2 TiB matches how nasdoom_control's own
+# freeBytes number is already read elsewhere (binary units — a live pool at
+# freeBytes=5116647133184 reads as "4.65 TB", i.e. TiB, not decimal TB).
+MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES = 2 * 1024**4
+
 # The model outputs exactly this (nothing else) when a cycle finds nothing
 # worth surfacing — checked literally by main() to decide whether to push to
 # Telegram at all. Unlike digest.py, which always reports something (it's a
@@ -165,8 +174,11 @@ status field, don't apply your own looser bar.
 - For an indexer: only nonzero failed_auth_queries, or a >50% query \
 failure rate (prowlarr_indexer_stats' own likely_needs_attention flag) — \
 not a single failed query, that's normal noise.
-- For storage: only genuinely high (>90%) media pool usage, not "getting \
-fuller than usual".
+- For storage: don't apply your own judgment at all. Media pool free-space \
+alerting is handled by a deterministic check that already ran before your \
+turn (a fixed 2 TB free-space floor, not a percentage — see the note above \
+if it flagged). nasdoom_control's percentFull number is informational only; \
+never treat it as alert-worthy yourself, even if it looks high.
 - For a media request (nasdoom_requests_overview): a request sitting in \
 'processing' (or 'searching') is normal and expected — it waits there until \
 a downloadable release actually exists. NEVER flag one based on how long it \
@@ -370,6 +382,41 @@ async def _deterministic_model_liveness_check(ollama_url: str) -> str | None:
     return "\n".join(f"{p} — not auto-fixed, needs escalation." for p in problems)
 
 
+async def _deterministic_storage_check(mcp_client: Client[Any]) -> str | None:
+    """Flags the media pool only on absolute free-space headroom (see
+    MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES), deterministic in code instead of
+    left to the LLM's own judgment — operator's own call (2026-08-05): a
+    percentFull threshold is exactly the kind of numeric policy decision
+    that once defined doesn't need a model re-deriving it (or drifting on
+    it) every cycle, same rationale as quality_guard's post-import checks.
+    No fix tool exists for low disk space (deleting media is the
+    operator's call, not this bot's — see digest.py's own comment on never
+    suggesting an unaudited manual-delete shortcut), so this only ever
+    reports, never acts."""
+    async with mcp_client:
+        result = await mcp_client.call_tool("nasdoom_control", {})
+    data = (_extract(result).get("data") or {})
+    sections = data.get("sections") if isinstance(data, dict) else None
+    storage_section = next(
+        (s for s in sections or [] if isinstance(s, dict) and s.get("id") == "storage"), None
+    )
+    pools = (storage_section or {}).get("data") or []
+    notes = []
+    for pool in pools:
+        free_bytes = pool.get("freeBytes")
+        if not isinstance(free_bytes, int):
+            continue
+        if free_bytes < MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES:
+            free_tb = free_bytes / 1024**4
+            threshold_tb = MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES / 1024**4
+            paths = ", ".join(pool.get("paths") or []) or "media pool"
+            notes.append(
+                f"{paths}: only {free_tb:.2f} TB free (below the {threshold_tb:.0f} TB threshold) — "
+                "not auto-fixed, needs escalation."
+            )
+    return "\n".join(notes) if notes else None
+
+
 # Markers for lines that must alert a human — checked FIRST, so a bundled
 # note that contains both a real fix and a real problem (e.g. the strike
 # checker's single joined note: "auto-fixed the stalled ones.\nN stuck on
@@ -503,7 +550,9 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     An empty list means a clean cycle (nothing actionable) — the expected,
     common outcome. Deterministic-fix notes (queue resume, strike fix,
     service restart) are always folded in as auto-fixed findings, even on an
-    otherwise-clean cycle.
+    otherwise-clean cycle. Model liveness and media-pool free-space are also
+    deterministic, but report-only — see their own docstrings for why
+    neither has (or should have) a fix tool.
 
     `read_only=True` is the on-demand "full status" path (Telegram status
     intent): it must never act. It skips all three deterministic fixers
@@ -522,6 +571,7 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     recovery_note = None
     quality_guard_note = None
     model_liveness_note = None
+    storage_note = None
     if not read_only:
         # Cheap (a handful of trivial pings), so it runs every scheduled
         # cycle rather than being throttled — see
@@ -530,6 +580,11 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
             model_liveness_note = await _deterministic_model_liveness_check(settings.ollama_url)
         except Exception:
             logger.exception("model liveness check failed (non-fatal)")
+
+        try:
+            storage_note = await _deterministic_storage_check(mcp_client)
+        except Exception:
+            logger.exception("storage check failed (non-fatal)")
 
         queue_fix_note = await _deterministic_queue_resume(mcp_client)
         # Strike-based stalled-download fixer — deterministic, same "keep it
@@ -594,7 +649,9 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     # cycle where the LLM returned the no-alert sentinel.
     llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
     return (
-        _notes_to_findings(queue_fix_note, strike_note, quality_guard_note, recovery_note, model_liveness_note)
+        _notes_to_findings(
+            queue_fix_note, strike_note, quality_guard_note, recovery_note, model_liveness_note, storage_note
+        )
         + llm_findings
     )
 
