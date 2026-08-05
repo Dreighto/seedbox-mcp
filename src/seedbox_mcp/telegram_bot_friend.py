@@ -789,6 +789,22 @@ async def _handle_message(
     )
 
 
+async def _startup_model_check(ollama_url: str) -> None:
+    """Background task, see run_bot()'s call site for why this isn't
+    awaited inline. Alerted via the operator's own NAS Ops bot, not this
+    bot's token — the operator may never have messaged this bot, so it
+    can't push to them directly."""
+    try:
+        problems = await check_models(ollama_url, (_DEFAULT_FRIEND_BOT_MODEL_ENTRY,))
+    except Exception:
+        logger.exception("startup model liveness check itself failed (non-fatal)")
+        return
+    if problems:
+        alert = "⚠️ Friend bot: a model check failed:\n" + "\n".join(problems)
+        logger.error(alert)
+        await send_to_operator(alert)
+
+
 async def run_bot() -> None:
     settings = FriendBotSettings()  # type: ignore[call-arg]
     if not settings.nasdoom_helper_telegram_bot_token:
@@ -818,18 +834,13 @@ async def run_bot() -> None:
     # cloud model (e.g. qwen3-coder:480b-cloud, retired 2026-07-15 and not
     # noticed here for 6+ days because the service never crashed, it just
     # 410'd on every real message) at boot instead of after N silently
-    # failed replies. Alerted via the operator's own NAS Ops bot, not this
-    # bot's token — the operator may never have messaged this bot, so it
-    # can't push to them directly. Best-effort: never blocks startup.
-    try:
-        problems = await check_models(settings.ollama_url, (_DEFAULT_FRIEND_BOT_MODEL_ENTRY,))
-    except Exception:
-        logger.exception("startup model liveness check itself failed (non-fatal)")
-        problems = []
-    if problems:
-        alert = "⚠️ Friend bot started, but a model check failed:\n" + "\n".join(problems)
-        logger.error(alert)
-        await send_to_operator(alert)
+    # failed replies. Fired as a background task, NOT awaited: model_health's
+    # per-model timeout is deliberately generous (up to ~5 min, to tolerate a
+    # genuine cold-start rather than mistake it for a dead model — see its
+    # own comment), and awaiting that here would leave the bot looking "down"
+    # (not polling Telegram at all) for up to ~10 minutes after every
+    # restart. The poll loop starts immediately either way.
+    asyncio.create_task(_startup_model_check(settings.ollama_url))
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:

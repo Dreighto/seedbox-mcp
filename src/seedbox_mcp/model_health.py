@@ -6,21 +6,27 @@ from collections.abc import Iterable
 
 import httpx
 
+from seedbox_mcp.chat.ollama_ai import KEEP_ALIVE
 from seedbox_mcp.model_registry import CloudModel
 
-# Trivial single-turn ping, no tools, no keep_alive override — this exists
-# purely to provoke a real response (or a real error) from the model, not to
-# warm it for a subsequent call (see monitor.py's _keep_interactive_model_warm
-# for that, separate concern).
-_PING_TIMEOUT_S = 30.0
+# Generous on purpose: a model with no recent traffic (e.g. qwen3.5:397b-cloud,
+# only used for the rare photo-identify path) is essentially always cold
+# between 30-min monitor cycles, and this codebase already has a documented,
+# live-confirmed fact about exactly that — Ollama Cloud calls that omit
+# keep_alive see ~4-5 min cold-start latency after an idle gap (see
+# ollama_ai.py's own KEEP_ALIVE comment). A 30s timeout mistook that for a
+# dead model twice in one day (2026-08-05, 04:07 and 13:06) — both were
+# ollama ps showing zero resident models at the time, not a real 410/retired
+# case. This timeout has to sit comfortably above that cold-start window, not
+# just above a normal warm response.
+_PING_TIMEOUT_S = 300.0
 
-# A single failed ping isn't proof of a real outage — live testing found a
-# plain network error against a healthy model (2026-08-05, twice in one day:
-# 04:07 and 13:06) false-paged the operator through the monitor cycle. Same
-# "don't page on one blip" principle the rest of monitor.py already applies
-# to service reachability — a genuinely retired/broken model (like
-# qwen3-coder:480b-cloud's 410) fails identically on a retry a few seconds
-# later; a transient blip usually doesn't.
+# A single failed ping isn't proof of a real outage. Same "don't page on one
+# blip" principle the rest of monitor.py already applies to service
+# reachability — a genuinely retired/broken model (like
+# qwen3-coder:480b-cloud's 410) fails identically on a retry; a cold-start
+# timeout usually doesn't, since the first attempt's request already kicked
+# off the load.
 _RETRY_DELAY_S = 5.0
 
 
@@ -34,12 +40,21 @@ async def check_model(ollama_url: str, model: str, timeout: float = _PING_TIMEOU
     it sat retired on Ollama's cloud side (confirmed live 2026-08-02) — a
     retired model doesn't disappear from the local daemon's model list, it
     just 410s on actual use. Existence in /api/tags proves nothing about
-    liveness."""
+    liveness.
+
+    Sends keep_alive (same value ollama_ai.py's real chat calls use) so a
+    healthy-but-cold model this check wakes up stays warm for whoever uses
+    it next, instead of evicting again immediately after this ping."""
     try:
         async with httpx.AsyncClient(base_url=ollama_url, timeout=timeout) as http:
             resp = await http.post(
                 "/api/chat",
-                json={"model": model, "messages": [{"role": "user", "content": "ping"}], "stream": False},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "stream": False,
+                    "keep_alive": KEEP_ALIVE,
+                },
             )
     except httpx.HTTPError as exc:
         return f"network error: {exc}"

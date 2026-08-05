@@ -1088,6 +1088,24 @@ async def _handle_callback(settings: BotSettings, token: str, allowed_chat_id: i
     await _run_finding_action(settings, token, allowed_chat_id, finding, action)
 
 
+async def _startup_model_check(ollama_url: str, token: str, allowed_chat_id: int) -> None:
+    """Background task, see run_bot()'s call site for why this isn't
+    awaited inline. Best-effort: a failure in the check itself is logged,
+    never raised into the caller (there's no caller to raise into by the
+    time this runs anyway)."""
+    try:
+        problems = await check_models(
+            ollama_url, (_DEFAULT_BOT_MODEL_ENTRY, _PHOTO_IDENTIFY_MODEL_ENTRY, _INVESTIGATE_MODEL_ENTRY)
+        )
+    except Exception:
+        logger.exception("startup model liveness check itself failed (non-fatal)")
+        return
+    if problems:
+        alert = "⚠️ NAS Ops bot: a model check failed:\n" + "\n".join(problems)
+        logger.error(alert)
+        await send_message(token, allowed_chat_id, alert)
+
+
 async def run_bot() -> None:
     settings = BotSettings()  # type: ignore[call-arg]
     if not settings.nas_ops_telegram_bot_token or not settings.nas_ops_telegram_allowed_chat_id:
@@ -1107,19 +1125,15 @@ async def run_bot() -> None:
     # cloud model (e.g. qwen3-coder:480b-cloud, retired 2026-07-15 and not
     # noticed here for 6+ days because the service never crashed, it just
     # 410'd on every real request) at boot instead of after N silently
-    # failed replies. Best-effort: never blocks startup, a network hiccup
-    # here shouldn't stop the bot from serving otherwise-fine requests.
-    try:
-        problems = await check_models(
-            settings.ollama_url, (_DEFAULT_BOT_MODEL_ENTRY, _PHOTO_IDENTIFY_MODEL_ENTRY, _INVESTIGATE_MODEL_ENTRY)
-        )
-    except Exception:
-        logger.exception("startup model liveness check itself failed (non-fatal)")
-        problems = []
-    if problems:
-        alert = "⚠️ NAS Ops bot started, but a model check failed:\n" + "\n".join(problems)
-        logger.error(alert)
-        await send_message(token, allowed_chat_id, alert)
+    # failed replies. Fired as a background task, NOT awaited: model_health's
+    # per-model timeout is deliberately generous (up to ~5 min, to tolerate a
+    # genuine cold-start rather than mistake it for a dead model — see its
+    # own comment), and awaiting that here would leave the bot looking "down"
+    # (not polling Telegram at all) for up to ~10 minutes after every restart
+    # if any one model happens to be cold. The poll loop starts immediately
+    # either way; the operator gets an alert if/when the check actually
+    # finds a problem.
+    asyncio.create_task(_startup_model_check(settings.ollama_url, token, allowed_chat_id))
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:
