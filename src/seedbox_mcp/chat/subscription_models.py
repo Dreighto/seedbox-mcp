@@ -72,10 +72,11 @@ def render_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -
 
 def parse_step(text: str) -> dict[str, Any]:
     """The Ollama-shaped assistant message in a backend's answer; ValueError when there is none."""
-    start, end = text.find("{"), text.rfind("}")
-    if start < 0 or end <= start:
+    start = text.find("{")
+    if start < 0:
         raise ValueError(f"no JSON object in answer: {text[:160]!r}")
-    answer = json.loads(text[start : end + 1])
+    # The first complete object is the step; models sometimes add a second one or prose after it.
+    answer, _ = json.JSONDecoder().raw_decode(text, start)
     content = answer.get("content") if isinstance(answer, dict) else None
     calls = answer.get("tool_calls") if isinstance(answer, dict) else None
     if not isinstance(content, str) or not isinstance(calls, list):
