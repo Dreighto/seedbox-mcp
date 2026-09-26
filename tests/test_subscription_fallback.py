@@ -39,7 +39,7 @@ class FakeMcp:
 
 
 def scripted(answers: list[str], seen: list[str]) -> Any:
-    async def runner(prompt: str, timeout_s: float) -> str:
+    async def runner(prompt: str, timeout_s: float, images: list[str]) -> str:
         seen.append(prompt)
         return answers.pop(0)
 
@@ -129,7 +129,7 @@ async def test_gates_still_apply_to_subscription_answers(monkeypatch: pytest.Mon
 async def test_next_backend_answers_and_all_failing_raises_the_original_429(monkeypatch: pytest.MonkeyPatch) -> None:
     respx.post(f"{OLLAMA}/api/chat").mock(return_value=httpx.Response(429, json=LIMIT))
 
-    async def broken(prompt: str, timeout_s: float) -> str:
+    async def broken(prompt: str, timeout_s: float, images: list[str]) -> str:
         raise RuntimeError("claude exited 1")
 
     monkeypatch.setitem(subscription_models.RUNNERS, "claude", broken)
@@ -209,7 +209,7 @@ async def test_a_cancelled_turn_kills_the_cli(tmp_path: Any, monkeypatch: pytest
 
 @pytest.mark.asyncio
 async def test_non_object_cli_output_moves_on_to_the_next_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def listy(prompt: str, timeout_s: float) -> str:
+    async def listy(prompt: str, timeout_s: float, images: list[str]) -> str:
         return subscription_models._envelope_result("[1, 2]")
 
     monkeypatch.setitem(subscription_models.RUNNERS, "claude", listy)
@@ -223,3 +223,104 @@ def test_a_bare_json_array_is_the_final_answer() -> None:
     assert subscription_models.parse_step(digest) == {"content": digest, "tool_calls": []}
     with pytest.raises(ValueError):
         subscription_models.parse_step('[{"severity": "healthy"}] and more text')
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_subscription_first_asks_claude_and_never_touches_ollama(monkeypatch: pytest.MonkeyPatch) -> None:
+    route = respx.post(f"{OLLAMA}/api/chat").mock(return_value=httpx.Response(500))
+    monkeypatch.setitem(
+        subscription_models.RUNNERS, "claude", scripted(['{"content": "hi there", "tool_calls": []}'], [])
+    )
+    text, _, _, _ = await ollama_ai.run_agent_turn(
+        "hi",
+        system_prompt="s",
+        mcp_client=FakeMcp(),
+        model="local:12b",
+        ollama_url=OLLAMA,
+        fallback_models=("claude",),
+        subscription_first=True,
+    )
+    assert text == "hi there"
+    assert route.call_count == 0
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_subscription_first_falls_back_to_the_local_model_when_claude_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    route = respx.post(f"{OLLAMA}/api/chat").mock(
+        return_value=httpx.Response(200, json={"message": {"role": "assistant", "content": "local answer"}})
+    )
+
+    async def broken(prompt: str, timeout_s: float, images: list[str]) -> str:
+        raise RuntimeError("claude exited 1")
+
+    monkeypatch.setitem(subscription_models.RUNNERS, "claude", broken)
+    text, _, _, _ = await ollama_ai.run_agent_turn(
+        "hi",
+        system_prompt="s",
+        mcp_client=FakeMcp(),
+        model="local:12b",
+        ollama_url=OLLAMA,
+        fallback_models=("claude",),
+        subscription_first=True,
+    )
+    assert text == "local answer"
+    assert json.loads(route.calls[0].request.content)["model"] == "local:12b"
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_images_reach_claude_as_attachments_not_prompt_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, list[str]]] = []
+
+    async def runner(prompt: str, timeout_s: float, images: list[str]) -> str:
+        seen.append((prompt, images))
+        return '{"content": "That is Spirited Away.", "tool_calls": []}'
+
+    monkeypatch.setitem(subscription_models.RUNNERS, "claude", runner)
+    _, history, _, _ = await ollama_ai.run_agent_turn(
+        "what is this?",
+        system_prompt="s",
+        mcp_client=FakeMcp(),
+        model="local:12b",
+        ollama_url=OLLAMA,
+        fallback_models=("claude",),
+        subscription_first=True,
+        images=["QUJDREVGRw=="],
+    )
+    prompt, images = seen[0]
+    assert images == ["QUJDREVGRw=="]
+    assert "QUJDREVGRw==" not in prompt and "[1 image(s) attached to this message]" in prompt
+    assert history[0]["images"] == ["QUJDREVGRw=="]
+    assert "images" not in ollama_ai.trim_history(history)[0]
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_images_reach_the_local_model_on_the_user_message() -> None:
+    route = respx.post(f"{OLLAMA}/api/chat").mock(
+        return_value=httpx.Response(200, json={"message": {"role": "assistant", "content": "ok"}})
+    )
+    await ollama_ai.run_agent_turn(
+        "what is this?",
+        system_prompt="s",
+        mcp_client=FakeMcp(),
+        model="local:12b",
+        ollama_url=OLLAMA,
+        fallback_models=(),
+        images=["QUJD"],
+    )
+    sent = json.loads(route.calls[0].request.content)["messages"]
+    assert sent[-1] == {"role": "user", "content": "what is this?", "images": ["QUJD"]}
+
+
+def test_claude_stream_result_reads_the_result_event() -> None:
+    out = '{"type": "system"}\n{"type": "result", "is_error": false, "result": "{\\"content\\": \\"x\\"}"}\n'
+    assert subscription_models._stream_result(out) == '{"content": "x"}'
+    with pytest.raises(ValueError):
+        subscription_models._stream_result('{"type": "result", "is_error": true, "result": "limit"}')
+    with pytest.raises(ValueError):
+        subscription_models._stream_result('{"type": "system"}')

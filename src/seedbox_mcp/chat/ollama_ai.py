@@ -309,7 +309,10 @@ def trim_history(
     """Keeps the most recent `max_messages` history entries, but never cuts
     between an assistant tool_calls message and the tool results that answer
     it — a mid-call trim leaves the model staring at an orphaned tool_calls
-    entry with no result, which reliably confuses it."""
+    entry with no result, which reliably confuses it. Image bytes are dropped:
+    the model's own reply already says what a photo showed, and replaying
+    them would resend every photo on every later turn."""
+    history = [{k: v for k, v in m.items() if k != "images"} for m in history]
     if len(history) <= max_messages:
         return history
     cut = len(history) - max_messages
@@ -335,6 +338,8 @@ async def run_agent_turn(
     max_tool_rounds: int = MAX_TOOL_ROUNDS,
     tool_arg_overrides: dict[str, dict[str, Any]] | None = None,
     fallback_models: tuple[str, ...] = subscription_models.ALL_BACKENDS,
+    subscription_first: bool = False,
+    images: list[str] | None = None,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, list[int]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
@@ -407,7 +412,12 @@ async def run_agent_turn(
     The default suits the operator's own chats and jobs: Codex and Cursor run
     jailed, but can still read their own login state. Pass
     subscription_models.CLAUDE_ONLY for chats with people outside the
-    household, and () to turn the fallback off."""
+    household, and () to turn the fallback off.
+
+    `subscription_first`: ask `fallback_models` first and use the Ollama
+    `model` only when every one of them fails; that turn stays on Ollama.
+
+    `images`: base64 images attached to `task`, for vision-capable models."""
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
     known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS
@@ -421,25 +431,29 @@ async def run_agent_turn(
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         *(history or []),
-        {"role": "user", "content": task},
+        {"role": "user", "content": task, **({"images": images} if images else {})},
     ]
 
+    async def ollama_chat() -> httpx.Response:
+        return await http.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "tools": tools,
+                "stream": False,
+                "keep_alive": KEEP_ALIVE,
+            },
+        )
+
     refused: httpx.Response | None = None
+    on_subscription = subscription_first and bool(fallback_models)
     async with httpx.AsyncClient(base_url=ollama_url, timeout=timeout_s) as http:
         for _round in range(max_tool_rounds):
             message: dict[str, Any] = {}
-            if refused is None:
-                resp = await http.post(
-                    "/api/chat",
-                    json={
-                        "model": model,
-                        "messages": messages,
-                        "tools": tools,
-                        "stream": False,
-                        "keep_alive": KEEP_ALIVE,
-                    },
-                )
-                if resp.status_code == 429 and fallback_models:
+            if not on_subscription:
+                resp = await ollama_chat()
+                if resp.status_code == 429 and fallback_models and not subscription_first:
                     logger.warning(
                         "ollama_ai: Ollama refused %s (429: %s); this turn uses %s",
                         model,
@@ -447,17 +461,24 @@ async def run_agent_turn(
                         ", ".join(fallback_models),
                     )
                     refused = resp
+                    on_subscription = True
                 else:
                     resp.raise_for_status()
                     message = resp.json().get("message", {})
-            if refused is not None:
+            if on_subscription:
                 try:
                     message, backend = await subscription_models.step(messages, tools, fallback_models, timeout_s)
+                    logger.info("ollama_ai: step answered by %s", backend)
                 except subscription_models.SubscriptionModelsUnavailable as exc:
-                    logger.error("ollama_ai: every subscription model failed: %s", exc)
-                    refused.raise_for_status()
-                    raise
-                logger.info("ollama_ai: step answered by %s", backend)
+                    if refused is not None:
+                        logger.error("ollama_ai: every subscription model failed: %s", exc)
+                        refused.raise_for_status()
+                        raise
+                    logger.warning("ollama_ai: subscription models failed (%s); this turn uses %s", exc, model)
+                    on_subscription = False
+                    resp = await ollama_chat()
+                    resp.raise_for_status()
+                    message = resp.json().get("message", {})
             content = message.get("content", "") or ""
 
             tool_calls = message.get("tool_calls")
@@ -548,16 +569,14 @@ async def run_agent_turn(
                         and pending_action is not None
                         and pending_action.get("ts", 0) >= turn_started_ts
                     ):
-                        logger.error(
-                            "ollama_ai BLOCKED same-turn confirm for cross-turn tool: %s(%s)", name, args
-                        )
+                        logger.error("ollama_ai BLOCKED same-turn confirm for cross-turn tool: %s(%s)", name, args)
                         record_action(name, args, dry_run=True, outcome="blocked_same_turn_confirm")
                         messages.append(
                             {
                                 "role": "tool",
                                 "content": (
                                     '{"ok": false, "error_type": "not_permitted", "message": '
-                                    '"This action needs the operator\'s explicit go-ahead in their NEXT '
+                                    "\"This action needs the operator's explicit go-ahead in their NEXT "
                                     "message. The preview ran; now STOP, show the operator the preview's "
                                     "current state, and wait — do not confirm in the same turn, and do "
                                     'not re-preview."}'
@@ -596,8 +615,8 @@ async def run_agent_turn(
                                 "content": (
                                     '{"ok": false, "error_type": "not_permitted", "message": '
                                     f'"{unverified[0][0]}={unverified[0][1]!r} was not found in this '
-                                    'conversation\'s search/lookup results — never invent or recall an id '
-                                    'from memory. Call media_search or nasdoom_omni_search first and use '
+                                    "conversation's search/lookup results — never invent or recall an id "
+                                    "from memory. Call media_search or nasdoom_omni_search first and use "
                                     'the id it returns."}}'
                                 ),
                             }
@@ -615,8 +634,8 @@ async def run_agent_turn(
                             "content": (
                                 '{"ok": false, "error_type": "rate_limited", "message": '
                                 f'"More than {MAX_ACTIONS_PER_HOUR} real actions in the last hour — '
-                                'refusing to execute more until this cools down. Tell the operator '
-                                'this happened, don\'t just retry."}}'
+                                "refusing to execute more until this cools down. Tell the operator "
+                                "this happened, don't just retry.\"}}"
                             ),
                         }
                     )

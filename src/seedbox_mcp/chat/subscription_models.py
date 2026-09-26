@@ -61,7 +61,7 @@ class SubscriptionModelsUnavailable(RuntimeError):
 
 def render_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
     system = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
-    rest = messages[1:] if system else messages
+    rest = [_without_images(m) for m in (messages[1:] if system else messages)]
     return "\n\n".join(
         [
             INSTRUCTIONS,
@@ -70,6 +70,19 @@ def render_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -
             "CONVERSATION (oldest first):\n" + json.dumps(rest),
         ]
     )
+
+
+def _without_images(message: dict[str, Any]) -> dict[str, Any]:
+    count = len(message.get("images") or [])
+    if not count:
+        return message
+    stripped = {k: v for k, v in message.items() if k != "images"}
+    stripped["content"] = f"{stripped.get('content', '')}\n[{count} image(s) attached to this message]"
+    return stripped
+
+
+def conversation_images(messages: list[dict[str, Any]]) -> list[str]:
+    return [image for m in messages for image in m.get("images") or []]
 
 
 def parse_step(text: str) -> dict[str, Any]:
@@ -96,6 +109,16 @@ def parse_step(text: str) -> dict[str, Any]:
             raise ValueError(f"tool call arguments are not an object: {call!r}")
         tool_calls.append({"function": {"name": call["name"], "arguments": arguments}})
     return {"content": content, "tool_calls": tool_calls}
+
+
+def _stream_result(out: str) -> str:
+    for line in reversed(out.splitlines()):
+        event = json.loads(line) if line.strip().startswith("{") else {}
+        if event.get("type") == "result":
+            if event.get("is_error") or not isinstance(event.get("result"), str):
+                raise ValueError(f"CLI reported an error: {line[:160]!r}")
+            return event["result"]
+    raise ValueError(f"no result event in CLI output: {out[-160:]!r}")
 
 
 def _envelope_result(out: str) -> str:
@@ -166,23 +189,30 @@ async def _run(argv: list[str], stdin: str, timeout_s: float) -> str:
     return out.decode(errors="replace")
 
 
-async def _claude(prompt: str, timeout_s: float) -> str:
+async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
+    # Telegram re-encodes every photo it delivers as JPEG.
+    content: list[dict[str, Any]] = [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": image}} for image in images
+    ]
+    content.append({"type": "text", "text": prompt})
+    user_turn = {"type": "user", "message": {"role": "user", "content": content}}
     # --setting-sources "" keeps the operator's hooks and MCP servers out; no
     # session is saved, so these calls never show up as his own conversations.
     out = await _run(
         [
             str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "",
             "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
-            "--output-format", "json",
+            "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--system-prompt", "Answer with exactly the one JSON object the user message asks for.",
         ],
-        prompt,
+        json.dumps(user_turn) + "\n",
         timeout_s,
     )  # fmt: skip
-    return _envelope_result(out)
+    return _stream_result(out)
 
 
-async def _codex(prompt: str, timeout_s: float) -> str:
+# Codex and Cursor get no image bytes, only the "[image(s) attached]" note in the prompt.
+async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
     answer = WORKDIR / f"codex-{os.getpid()}-{time.time_ns()}.txt"
     try:
         await _run(
@@ -198,7 +228,7 @@ async def _codex(prompt: str, timeout_s: float) -> str:
         answer.unlink(missing_ok=True)
 
 
-async def _cursor(prompt: str, timeout_s: float) -> str:
+async def _cursor(prompt: str, timeout_s: float, images: list[str]) -> str:
     cursor = str((BIN / "cursor-agent").resolve())
     # Cursor's login token lasts an hour; `status` renews it before the real call.
     await _run([*_jail("cursor"), cursor, "status"], "", 60.0)
@@ -221,7 +251,11 @@ async def _cursor(prompt: str, timeout_s: float) -> str:
     return _envelope_result(out)
 
 
-RUNNERS: dict[str, Callable[[str, float], Awaitable[str]]] = {"claude": _claude, "codex": _codex, "cursor": _cursor}
+RUNNERS: dict[str, Callable[[str, float, list[str]], Awaitable[str]]] = {
+    "claude": _claude,
+    "codex": _codex,
+    "cursor": _cursor,
+}
 
 
 async def step(
@@ -233,10 +267,11 @@ async def step(
     """(assistant message, backend that answered) from the first backend that gives a usable answer."""
     WORKDIR.mkdir(parents=True, exist_ok=True)
     prompt = render_prompt(messages, tools)
+    images = conversation_images(messages)
     failures = []
     for name in backends:
         try:
-            return parse_step(await RUNNERS[name](prompt, timeout_s)), name
+            return parse_step(await RUNNERS[name](prompt, timeout_s, images)), name
         except Exception as exc:  # noqa: BLE001 - any CLI failure or odd output moves on to the next backend
             logger.warning("subscription model %s failed: %s: %s", name, type(exc).__name__, exc)
             failures.append(f"{name}: {type(exc).__name__}: {exc}")
