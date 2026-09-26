@@ -29,6 +29,7 @@ def test_arr_reason_empty_when_nothing_reported() -> None:
     assert _arr_reason({}) == ""
     assert _arr_reason({"errorMessage": None, "statusMessages": []}) == ""
 
+
 # Real radarr mount string shape (host paths include a space in "Anime Movies").
 _RADARR_RAW = (
     "/mnt/scratch/downloads/complete=>/downloads/complete "
@@ -109,3 +110,37 @@ async def test_diagnose_item_probe_command_is_syntactically_valid_shell(
     assert "fi if" not in script  # the missing-semicolon bug, reintroduced
     check = subprocess.run(["sh", "-n"], input=script, capture_output=True, text=True)
     assert check.returncode == 0, check.stderr
+
+
+@pytest.mark.asyncio
+async def test_custom_format_upgrade_rejection_is_not_an_upgrade(
+    monkeypatch: pytest.MonkeyPatch, services: Services
+) -> None:
+    """Sonarr says 'Not a Custom Format upgrade', not 'not an upgrade'.
+    That rejection must classify as benign before any filesystem probe.
+    """
+
+    async def boom(_services: object, command: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        raise AssertionError(f"filesystem probe should not run: {command}")
+
+    monkeypatch.setattr(import_diagnosis, "_run_on_nas", boom)
+
+    item = {
+        "outputPath": "/downloads/complete/[Trix] Kaijuu 8-gou S01E05/",
+        "series": {"title": "Kaiju No. 8"},
+        "errorMessage": "",
+        "statusMessages": [
+            {
+                "title": "[Trix] Kaijuu 8-gou S01E05",
+                "messages": [
+                    "Not a Custom Format upgrade for existing episode file(s). "
+                    "New: [Anime LQ Groups, Resolution: 1080p] (5) do not improve on "
+                    "Existing: [10-bit / Hi10P, Anime BD Tier 07, Anime Group: Almighty, "
+                    "Resolution: 1080p] (5006)"
+                ],
+            }
+        ],
+    }
+    result = await _diagnose_item(services, "sonarr", item)
+    assert result["diagnosis"] == "not_an_upgrade"
+    assert "custom format upgrade" in (result["arr_reason"] or "").lower()

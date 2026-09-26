@@ -623,6 +623,53 @@ async def test_staleness_report_missing_from_plex_matches_by_file_path_not_title
 
 
 @pytest.mark.asyncio
+async def test_staleness_report_missing_from_plex_matches_by_folder_path_not_title(services: Services) -> None:
+    # Same title-drift problem for TV: Sonarr's disambiguated title
+    # ("Fruits Basket (2019)", "Re:Monster") often differs from Plex's
+    # agent-matched title ("Fruits Basket", "Re: Monster"). Matching on
+    # title alone flagged fully-indexed anime series as missing.
+    services.radarr.routes[("GET", "/api/v3/movie")] = []
+    services.sonarr.routes[("GET", "/api/v3/series")] = [
+        {"id": 206, "title": "Fruits Basket (2019)", "year": 2019, "path": "/anime/Fruits Basket (2019)"},
+        {"id": 541, "title": "Re:Monster", "year": 2024, "path": "/anime/Re-Monster (2024)"},
+        {"id": 999, "title": "Truly Missing Series", "year": 2020, "path": "/anime/Truly Missing Series (2020)"},
+    ]
+    plex_items = [
+        {
+            "type": "show",
+            "title": "Fruits Basket",
+            "year": 2019,
+            "section": "Anime",
+            "rating_key": "400",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "last_viewed_at": None,
+            "view_count": 0,
+            "size_on_disk_gb": 69.7,
+            "file_paths": [],
+            "folder_paths": ["/anime/Fruits Basket (2019)"],
+        },
+        {
+            "type": "show",
+            "title": "Re: Monster",
+            "year": 2024,
+            "section": "Anime",
+            "rating_key": "401",
+            "added_at": "2024-01-01T00:00:00+00:00",
+            "last_viewed_at": None,
+            "view_count": 0,
+            "size_on_disk_gb": 21.5,
+            "file_paths": [],
+            "folder_paths": ["/anime/Re-Monster (2024)"],
+        },
+    ]
+    object.__setattr__(services, "plex", _StalenessPlex(plex_items))
+    result = await staleness_report(services, media_type="tv", older_than_days=1)
+    assert result["ok"] is True
+    missing_ids = {item["sonarr_id"] for item in result["data"]["managed_missing_from_plex"]}
+    assert missing_ids == {999}
+
+
+@pytest.mark.asyncio
 async def test_staleness_report_unmanaged_matches_by_path_not_title(services: Services) -> None:
     # Same title-drift problem in the other direction: a Plex item whose
     # displayed title differs from Radarr/Sonarr's must not be reported

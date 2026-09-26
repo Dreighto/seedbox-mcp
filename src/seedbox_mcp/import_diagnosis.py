@@ -115,18 +115,29 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
         )
         result["remediation_note"] = "Safe to remove+blocklist and re-search for a real release."
         return result
-    if "not an upgrade" in low or "already" in low:
+    # Sonarr's live wording is "Not a Custom Format upgrade for existing
+    # episode file(s)", which does not contain the substring "not an upgrade".
+    not_upgrade_markers = (
+        "not an upgrade",
+        "custom format upgrade",
+        "do not improve on existing",
+    )
+    if any(m in low for m in not_upgrade_markers) or "already" in low:
         result["diagnosis"] = "not_an_upgrade"
         result["explanation"] = (
             f'{source} reports: "{reason}". The existing file is equal or better, so this copy was '
-            "correctly skipped. Benign."
+            "correctly skipped. Benign. Do not treat this as a permissions/path failure, and do not "
+            "escalate it."
+        )
+        result["remediation_note"] = (
+            "Safe to remove+blocklist the queue item to drop the leftover download; keep the library file."
         )
         return result
 
     if not output_path:
         result["diagnosis"] = "no_output_path"
         result["explanation"] = (
-            f'{source} gave no output path and its reason was {reason or "empty"}; too early or too vague '
+            f"{source} gave no output path and its reason was {reason or 'empty'}; too early or too vague "
             "to diagnose. Try nas_log_search for this release name to see the arr's own log detail."
         )
         return result
