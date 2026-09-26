@@ -7,8 +7,8 @@ tool call, answered as one JSON object; run_agent_turn still executes every MCP
 tool call itself, through the allowlist, the preview/confirm gate, the entity-id
 check and the rate limit.
 
-Claude runs with an empty tool allowlist. Codex runs with every tool feature
-disabled (it has no allowlist). Both are held to STEP_SCHEMA so a model can't
+Claude's tool allowlist holds only its own web search. Codex, which has no
+allowlist, runs with every tool feature disabled. Both are held to STEP_SCHEMA so a model can't
 answer in loose prose. Cursor keeps its own read tools. Codex and
 Cursor run in a bubblewrap jail whose home holds only their own login state:
 the conversation and tool results are untrusted text and must not be able to
@@ -35,12 +35,12 @@ HOME = Path.home()
 BIN = HOME / ".local/bin"
 WORKDIR = HOME / ".local/state/seedbox-mcp/model-fallback"
 CLAUDE_MODEL = "sonnet"
-CODEX_MODEL = "gpt-6-sol"
+CODEX_MODEL = "gpt-6-luna"
 CURSOR_MODEL = "grok-4.7-medium"
 
 ALL_BACKENDS: tuple[str, ...] = ("claude", "codex", "cursor")
 # Codex and Cursor keep their login state inside the jail, and neither CLI can
-# be given an empty tool allowlist the way Claude can, so a chat with people
+# be given a tool allowlist the way Claude can, so a chat with people
 # outside the household gets Claude only.
 CLAUDE_ONLY: tuple[str, ...] = ("claude",)
 
@@ -80,7 +80,8 @@ STEP_SCHEMA: dict[str, Any] = {
     },
 }
 # Codex exec has no tool switch of its own; these features are every way it
-# could read, run or fetch anything.
+# could read, run or fetch anything. Luna reaches its own web search only
+# through code_mode_host, so it goes without: Claude, ahead of it, has search.
 CODEX_TOOL_FEATURES = (
     "shell_tool",
     "unified_exec",
@@ -89,6 +90,20 @@ CODEX_TOOL_FEATURES = (
     "computer_use",
     "skill_search",
     "tool_suggest",
+    "multi_agent",
+    "view_image",
+    "memories",
+    "goals",
+    "plugins",
+    "image_generation",
+    "code_mode_host",
+)
+
+
+CLAUDE_SYSTEM_PROMPT = (
+    "Answer with exactly the one JSON object the user message asks for. You also have a web search of "
+    "your own, separate from TOOLS. Use it directly whenever something current matters (release dates, "
+    "what's new, what's streaming); never put it in tool_calls."
 )
 
 
@@ -258,17 +273,21 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
     ]
     content.append({"type": "text", "text": prompt})
     user_turn = {"type": "user", "message": {"role": "user", "content": content}}
-    # --setting-sources "" keeps the operator's hooks and settings out, and
-    # --strict-mcp-config his claude.ai connectors (Linear, GitHub, the gateway's
-    # file reader), which --tools "" alone still loads. No session is saved, so
-    # these calls never show up as his own conversations.
+    # --tools allows only Claude's own web search, which runs on Anthropic's side
+    # and can't touch this machine. --setting-sources "" keeps the operator's
+    # hooks and settings out, and --strict-mcp-config his claude.ai connectors
+    # (Linear, GitHub, the gateway's file reader), which --tools alone still
+    # loads. No session is saved, so these calls never show up as his own
+    # conversations.
     out = await _run(
         [
-            str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "", "--strict-mcp-config",
+            str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL,
+            "--tools", "WebSearch", "--allowedTools", "WebSearch",
+            "--strict-mcp-config",
             "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(STEP_SCHEMA),
-            "--system-prompt", "Answer with exactly the one JSON object the user message asks for.",
+            "--system-prompt", CLAUDE_SYSTEM_PROMPT,
         ],
         json.dumps(user_turn) + "\n",
         timeout_s,

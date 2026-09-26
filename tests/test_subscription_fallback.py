@@ -363,6 +363,9 @@ async def test_codex_runs_without_tools_or_user_config(tmp_path: Any, monkeypatc
     assert "-i" not in argv
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     assert argv[argv.index("-c") + 1] == 'web_search="disabled"'
+    assert {"multi_agent", "view_image", "memories", "goals", "plugins", "code_mode_host"} <= set(
+        subscription_models.CODEX_TOOL_FEATURES
+    )
     for feature in subscription_models.CODEX_TOOL_FEATURES:
         assert argv[argv.index(feature) - 1] == "--disable"
     assert seen["schema"] == subscription_models.STEP_SCHEMA
@@ -430,6 +433,7 @@ async def test_claude_runs_with_no_tools_and_no_connectors(monkeypatch: pytest.M
     monkeypatch.setattr(subscription_models, "_run", fake_run)
     await subscription_models.RUNNERS["claude"]("prompt", 5, [])
     argv = seen[0]
-    assert argv[argv.index("--tools") + 1] == ""
+    assert argv[argv.index("--tools") + 1] == "WebSearch"
+    assert argv[argv.index("--allowedTools") + 1] == "WebSearch"
     assert "--strict-mcp-config" in argv and "--mcp-config" not in argv
     assert argv[argv.index("--setting-sources") + 1] == ""
