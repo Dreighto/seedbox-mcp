@@ -12,6 +12,7 @@ import httpx
 from fastmcp import Client
 
 from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
+from seedbox_mcp.chat import subscription_models
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
 from seedbox_mcp.config import Settings
 from seedbox_mcp.model_health import check_models
@@ -702,6 +703,7 @@ async def _handle_message(
         tool_arg_overrides={
             "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
         },
+        fallback_models=subscription_models.NO_FILE_ACCESS,
     )
     try:
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
