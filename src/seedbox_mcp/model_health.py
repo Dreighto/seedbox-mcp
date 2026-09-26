@@ -12,8 +12,8 @@ from seedbox_mcp.model_registry import CloudModel
 
 logger = logging.getLogger("seedbox_mcp.model_health")
 
-# Generous on purpose: a model with no recent traffic (e.g. qwen3.5:397b-cloud,
-# only used for the rare photo-identify path) is essentially always cold
+# Generous on purpose: a model with no recent traffic (e.g. one used only by a rare path,
+# like photo identify) is essentially always cold
 # between 30-min monitor cycles, and this codebase already has a documented,
 # live-confirmed fact about exactly that — Ollama Cloud calls that omit
 # keep_alive see ~4-5 min cold-start latency after an idle gap (see

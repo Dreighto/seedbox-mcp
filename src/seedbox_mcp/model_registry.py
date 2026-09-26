@@ -31,8 +31,10 @@ DEFAULT_BOT_MODEL = CloudModel("gpt-oss:20b-cloud", "NAS Ops bot: default intera
 # disambiguate same-titled entries) than a quick text reply does — live
 # testing found DEFAULT_BOT_MODEL genuinely inconsistent on this one task.
 # Deliberately the most reliable model available, not just "bigger than
-# default" — see telegram_bot.py's _handle_photo_message.
-PHOTO_IDENTIFY_MODEL = CloudModel("qwen3.5:397b-cloud", "NAS Ops bot: photo/poster identify model")
+# default" — see telegram_bot.py's _handle_photo_message. The model only
+# ever sees OCR text, never the image, so it needs tool calling and
+# reasoning, not vision. qwen3.5:397b-cloud was retired 2026-09-25 (410).
+PHOTO_IDENTIFY_MODEL = CloudModel("deepseek-v4-pro:cloud", "NAS Ops bot: photo/poster identify model")
 
 # Investigation/diagnosis is inherently multi-step (check status, pull logs,
 # correlate across tools, then act) — escalated to from DEFAULT_BOT_MODEL
