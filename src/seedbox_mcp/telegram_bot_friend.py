@@ -15,27 +15,18 @@ from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot
 from seedbox_mcp.chat import subscription_models
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
 from seedbox_mcp.config import Settings, configure_logging
-from seedbox_mcp.model_health import check_models
-from seedbox_mcp.model_registry import DEFAULT_FRIEND_BOT_MODEL as _DEFAULT_FRIEND_BOT_MODEL_ENTRY
 from seedbox_mcp.notify_operator import send_to_operator
 from seedbox_mcp.telegram import TELEGRAM_API, format_for_telegram, send_message
 
 logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
 
-# Started as the fast/cheap model on the assumption that search + routing
-# is a quick lookup, not multi-step reasoning. Live testing proved that
-# wrong before this ever shipped: a plain single-title search worked but
-# was slow and produced a garbled reply fragment, and a TV-series request
-# (the exact case that has to route correctly to the operator, not
-# auto-add) hung completely with zero tool calls for over 90 seconds.
-# Same failure class already found and fixed twice tonight (poster ID,
-# the monitor's queue-check) — this is a safety-relevant routing decision
-# (does this get auto-added or does it need the operator's eyes on it),
-# so it gets the reliable model from the start rather than shipping on
-# the fast one and hoping. Sourced from model_registry (see there for the
-# "why this specific model" reasoning) so this string exists in exactly one
-# place — it's what model_health's startup/monitor liveness checks sweep.
-DEFAULT_FRIEND_BOT_MODEL = _DEFAULT_FRIEND_BOT_MODEL_ENTRY.name
+# Claude on the operator's subscription answers every message (subscription_first);
+# this local model on room's GPU answers only when Claude fails. Among the
+# vision-capable local models that fit the card it was the only one that got
+# every test question right, but it misnames scene stills far more often than
+# Claude, so it stays the backup. Local on purpose: Ollama Cloud's weekly limit
+# kept taking the friend bot down.
+LOCAL_BACKUP_MODEL = "gemma4:12b-it-qat"
 POLL_TIMEOUT_S = 30
 
 # Deliberately its own small, curated tool set instead of sharing
@@ -116,9 +107,7 @@ if not _friend_tools <= _FRIEND_SAFE_ALLOWLIST:
         "This bot is exposed to outside users; every tool must be on _FRIEND_SAFE_ALLOWLIST."
     )
 if _friend_tools & _FRIEND_FORBIDDEN:
-    raise RuntimeError(
-        f"Friend bot tool set includes forbidden system tools: {_friend_tools & _FRIEND_FORBIDDEN}."
-    )
+    raise RuntimeError(f"Friend bot tool set includes forbidden system tools: {_friend_tools & _FRIEND_FORBIDDEN}.")
 
 # Separate history file from the operator bot's — different conversations,
 # different chat_ids, no reason to share state.
@@ -193,18 +182,68 @@ async def _send_enroll_request(token: str, admin_chat_id: int, name: str, handle
 # reply (and Telegram can't be pointed at an arbitrary host).
 _POSTER_RE = re.compile(r"\[POSTER:\s*(https://image\.tmdb\.org/[^\]\s]+)\s*\]", re.IGNORECASE)
 # Strip ANY poster marker (valid or not) so none ever leaks into the text as
-# literal "[POSTER:...]" — e.g. when the model lists several picks each with
-# a marker, we render only the first real poster and clean the rest out.
+# literal "[POSTER:...]", including one with a made-up non-TMDB URL.
 _ANY_POSTER_RE = re.compile(r"\[POSTER:[^\]]*\]", re.IGNORECASE)
 
 
+MAX_ALBUM_POSTERS = 4
+
+
+def split_poster_album(reply: str) -> tuple[list[tuple[str, str]], str]:
+    """(poster url, caption) per distinct poster, and the text left over. A
+    poster's caption is the rest of the line its marker sits on, so each
+    option's description travels with its picture."""
+    album: list[tuple[str, str]] = []
+    rest: list[str] = []
+    for line in reply.splitlines():
+        urls = [u for u in _POSTER_RE.findall(line) if u not in {a for a, _ in album}]
+        if urls and len(album) < MAX_ALBUM_POSTERS:
+            album.append((urls[0], _ANY_POSTER_RE.sub("", line).strip()))
+        else:
+            rest.append(_ANY_POSTER_RE.sub("", line))
+    return album, "\n".join(rest).strip()
+
+
+async def _send_album(token: str, chat_id: int, album: list[tuple[str, str]]) -> bool:
+    def media(markdown: bool) -> list[dict[str, str]]:
+        items = []
+        for url, caption in album:
+            item = {"type": "photo", "media": url, "caption": format_for_telegram(caption)[:1024]}
+            if markdown:
+                item["parse_mode"] = "Markdown"
+            items.append(item)
+        return items
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as http:
+            url = f"{TELEGRAM_API}/bot{token}/sendMediaGroup"
+            r = await http.post(url, json={"chat_id": chat_id, "media": media(True)})
+            if r.status_code == 400:  # bad markdown in a caption → retry plain
+                r = await http.post(url, json={"chat_id": chat_id, "media": media(False)})
+    except (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError):
+        logger.warning("sendMediaGroup network error, falling back to text")
+        return False
+    if r.is_error:
+        logger.warning("sendMediaGroup failed (%s), falling back to text", r.text[:150])
+    return not r.is_error
+
+
 async def _send_reply(token: str, chat_id: int, reply: str) -> None:
-    """Send the bot's reply. If it carries a [POSTER:<tmdb url>] marker, send
-    the (first) poster as a photo with the rest as the caption; otherwise
-    plain text. Any extra/invalid markers are stripped from the text so they
-    never show up literally, and any photo failure degrades to text."""
-    m = _POSTER_RE.search(reply)
+    """Send the bot's reply. Several [POSTER:<tmdb url>] markers become an
+    album, each poster captioned with its own line, then the remaining text.
+    One marker sends that poster with the whole reply as its caption. Invalid
+    markers are stripped so they never show up literally, and any photo
+    failure degrades to text."""
+    album, rest = split_poster_album(reply)
     text = _ANY_POSTER_RE.sub("", reply).strip()
+    if len(album) > 1:
+        if await _send_album(token, chat_id, album):
+            if rest:
+                await send_message(token, chat_id, rest)
+            return
+        await send_message(token, chat_id, text or reply)
+        return
+    m = _POSTER_RE.search(reply)
     if not m:
         await send_message(token, chat_id, text or reply)
         return
@@ -397,15 +436,38 @@ clearly say yes to that, grab that specific copy with nasdoom_grab_release \
 copy without that explicit "yes, I know it's low quality" — and always \
 prefer the normal request when a proper copy is or will be available.
 
-Show the poster: whenever you point to ONE specific title (a search result \
-you're offering to add, confirming what you're requesting, or giving one \
-title's status), show its poster by putting `[POSTER:<the poster URL from \
-that jellyseerr_search result>]` anywhere in your reply. Use the poster URL \
-EXACTLY as the search returned it (it starts with https://image.tmdb.org); \
-never invent one. When you show a poster, keep your words SHORT, a line or \
-two, the poster does the work of saying which title it is. Only for a single \
-title, never for a list of options (ask which one first) or general chat, \
-and skip it if that result had no poster.
+Show posters, they are how people recognize a title: whenever you point to \
+a specific title (a search result you're offering to add, confirming what \
+you're requesting, giving one title's status, or a pick you're suggesting), \
+show its poster with `[POSTER:<the poster URL from that jellyseerr_search \
+result>]`. Use the poster URL EXACTLY as the search returned it (it starts \
+with https://image.tmdb.org); never invent one, and skip it if that result \
+had no poster.
+- One title: put the marker anywhere and keep your words SHORT, a line or \
+two, the poster does the work of saying which title it is.
+- Two to four titles (options to choose from, or picks): give each title \
+its own line, with its marker at the END of that line, like \
+`*The Martian* (2015): stranded on Mars, grows potatoes. On Plex. \
+[POSTER:https://image.tmdb.org/...]` The posters are sent as an album with each line \
+under its own poster, so keep each line short and self-contained. Put your \
+question ("which one?", "want me to add it?") on its own last line with no \
+marker. Never more than 4 posters in one reply.
+
+Can't remember the name: people often describe a title instead of naming \
+it ("the movie where a guy gets stuck on Mars", "that anime with the elf \
+who outlives her party", "the show with the chemistry teacher", "something \
+with that actor from The Bear"), or send a photo of a poster, a cover, a \
+screenshot of a scene or an actor. Work it out, don't make them name it:
+- Think about what fits the plot, scene, characters, actors or artwork, \
+using what you know. If you're not sure, or it sounds recent, use \
+web_search with the description to find candidates.
+- Then jellyseerr_search each candidate (up to 4) to get its real poster \
+and whether it's on Plex.
+- If one clearly fits, show it with its poster and ask "is this the one?". \
+If a few could fit, show them as options with their posters, most likely \
+first, and ask which one. If nothing fits, say so and ask for one more \
+detail (roughly when it came out, an actor, a scene they remember).
+- Never request anything until they confirm which title they mean.
 
 Recommendations and "help me decide what to watch": people will ask \
 open-ended things like "find me a scary movie for tonight", "what should I \
@@ -421,8 +483,8 @@ STEP 2, call jellyseerr_search for EACH title you are about to mention, to \
 find out if it is really on Plex. Only after those calls, write your answer: \
 2 to 4 concrete picks, the ones that came back on Plex FIRST (they can watch \
 those now) each with a one-line reason, and for a great pick that is not on \
-Plex, offer to add it. Show the poster for your top pick. Keep it short and \
-skimmable, then ask if they want one added or want other options. Listing \
+Plex, offer to add it. Show each pick with its poster (the two-to-four \
+titles rule above). Keep it short and skimmable, then ask if they want one added or want other options. Listing \
 "new" titles from memory instead of web_search gives them stale, wrong info, \
 and saying a title is or is not on Plex without a jellyseerr_search this turn \
 is a false claim, do not do either. This "do it now with real tools, don't \
@@ -488,8 +550,9 @@ plain terms:
 - Request something new. Just ask, like "can you get Dune" or "do you have \
 The Bear". Heads up: requests go to the owner to approve first, so it is not \
 instant; I'll let you know once it's approved and on the way.
-- Not sure of the name? Send me a photo of the poster or cover and I'll \
-figure out what it is.
+- Not sure of the name? Describe it ("the one where...") or send me a \
+photo of the poster, the cover, or a screenshot of a scene, and I'll show \
+you what I think it is.
 - Check if a new movie, or a new season or batch of an anime, is actually \
 out yet or streaming yet.
 - Grab something that just came out. Heads up: if a movie only just hit \
@@ -504,7 +567,7 @@ message the owner directly. Just tell me what you're looking for.
 
 class FriendBotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
-    ollama_friend_bot_model: str = DEFAULT_FRIEND_BOT_MODEL
+    friend_bot_local_model: str = LOCAL_BACKUP_MODEL
 
     @property
     def mcp_url(self) -> str:
@@ -520,13 +583,9 @@ async def _handle_photo_message(
     state: ChatState,
     requester_name: str = "a friend",
 ) -> ChatState:
-    """A friend sent a photo of a poster. Download it, OCR it in code (the
-    model can't fetch Telegram bytes), then route the extracted text through
-    the normal pipeline so the model identifies the title, SHOWS its poster,
-    and offers to add it — closing the loop on the operator's old 'friend
-    sends me a poster screenshot, I ID it by hand' pain."""
-    async with httpx.AsyncClient(timeout=10.0) as http:
-        await http.post(f"{TELEGRAM_API}/bot{token}/sendChatAction", json={"chat_id": chat_id, "action": "typing"})
+    """A friend sent a photo: a poster, a cover, a screenshot of a scene, an
+    actor. The model sees the image itself, so a scene with no text on it
+    works as well as a poster."""
     largest = max(photo_sizes, key=lambda p: p.get("file_size") or (p.get("width", 0) * p.get("height", 0)))
     try:
         image_bytes = await _download_telegram_photo(token, largest["file_id"])
@@ -534,43 +593,13 @@ async def _handle_photo_message(
         logger.exception("failed to download friend photo")
         await send_message(token, chat_id, "I couldn't download that photo. Mind sending it again?")
         return state
-
-    mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
-    try:
-        async with mcp_client:
-            result = await mcp_client.call_tool("poster_ocr", {"image_b64": base64.b64encode(image_bytes).decode()})
-        ocr_data = json.loads("\n".join(b.text for b in result.content if hasattr(b, "text"))).get("data", {})
-    except Exception:
-        logger.exception("friend poster OCR failed")
-        await send_message(token, chat_id, "I couldn't read that image right now. You can also just type the title.")
-        return state
-
-    texts = ocr_data.get("texts_by_prominence", [])
-    logger.info("friend photo OCR: %r", texts)
-    if not texts:
-        await send_message(token, chat_id, "I couldn't make out any text on that. Is it a clear shot of the poster? Or just type the title.")
-        return state
-
-    extracted = "; ".join(f'"{t["text"]}" (confidence {t.get("confidence", 0):.2f})' for t in texts[:8])
-    all_single_words = all(len(str(t.get("text", "")).split()) <= 1 for t in texts)
-    sparse = (
-        " WARNING: every fragment is a single word, which is thin evidence for a specific title; if you are "
-        "not confident, ask them to type the title rather than guessing."
-        if all_single_words
-        else ""
+    task = (f"{caption}\n\n" if caption else "") + (
+        "(They sent the attached photo. Work out which movie, show or anime it is from, following the "
+        "\"Can't remember the name\" rules. Don't request anything until they confirm the title.)"
     )
-    task = (
-        f"The person sent a photo of a movie or TV poster (not a request in words). OCR read exactly this "
-        f"text off it, largest/most prominent first: {extracted}.{sparse} "
-        f"{'They also wrote: ' + caption + '. ' if caption else ''}"
-        "That is the COMPLETE list of text found. Work out which single title this poster is for: poster "
-        "fonts and logos often garble OCR, so combine ALL the fragments (garbled ones included) into one "
-        "likely title and search for it with jellyseerr_search. Then tell them which title you think it is "
-        "and SHOW ITS POSTER (the [POSTER:...] rule), and ask if that's the one they want added. If you "
-        "genuinely can't tell, say so and ask them to type the title. Do NOT request anything yet, confirm "
-        "the title with them first."
+    return await _handle_message(
+        settings, token, chat_id, task, state, requester_name, images=[base64.b64encode(image_bytes).decode()]
     )
-    return await _handle_message(settings, token, chat_id, task, state, requester_name)
 
 
 # A reply that PROMISES to act and then ends the turn is a lie by design —
@@ -611,9 +640,7 @@ _PUNT_CONTINUATION = (
 
 # Honest last resort if the model punts even after being forced to continue —
 # never leave a "give me a second" as the final word.
-_PUNT_FALLBACK = (
-    "Sorry, I couldn't finish that one just now. Ask me again and I'll get you an answer right away."
-)
+_PUNT_FALLBACK = "Sorry, I couldn't finish that one just now. Ask me again and I'll get you an answer right away."
 
 # Blame-user guard: catches the person disputing an availability claim the bot
 # just made ("it's not there", "can't find it"), catches the bot's own prior
@@ -671,6 +698,7 @@ async def _handle_message(
     text: str,
     state: ChatState,
     requester_name: str = "a friend",
+    images: list[str] | None = None,
 ) -> ChatState:
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     async with httpx.AsyncClient(timeout=10.0) as http:
@@ -695,15 +723,14 @@ async def _handle_message(
     turn_kwargs: dict[str, Any] = dict(
         system_prompt=system_prompt,
         mcp_client=mcp_client,
-        model=settings.ollama_friend_bot_model,
+        model=settings.friend_bot_local_model,
         allowed_tools=FRIEND_READ_ONLY_TOOLS | FRIEND_ACTION_TOOLS,
         action_tools=FRIEND_CONFIRM_TOOLS,
         ollama_url=settings.ollama_url,
         max_tool_rounds=10,
-        tool_arg_overrides={
-            "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
-        },
+        tool_arg_overrides={"nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}},
         fallback_models=subscription_models.CLAUDE_ONLY,
+        subscription_first=True,
     )
     try:
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
@@ -711,6 +738,7 @@ async def _handle_message(
             history=state.get("history", []),
             pending_action=state.get("pending_action"),
             known_entity_ids=state.get("known_entity_ids"),
+            images=images,
             **turn_kwargs,
         )
         logger.info("reply: %r", reply)
@@ -759,7 +787,11 @@ async def _handle_message(
             blame_attempts += 1
             logger.warning(
                 "blame-user pattern detected (attempt %d): user_disputes=%s bot_claimed=%s reply_blames=%s reply=%r",
-                blame_attempts, user_disputes, bot_previously_claimed, reply_blames, reply[:200],
+                blame_attempts,
+                user_disputes,
+                bot_previously_claimed,
+                reply_blames,
+                reply[:200],
             )
             reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
                 _BLAME_USER_CONTINUATION,
@@ -791,20 +823,22 @@ async def _handle_message(
     )
 
 
-async def _startup_model_check(ollama_url: str) -> None:
-    """Background task, see run_bot()'s call site for why this isn't
-    awaited inline. Alerted via the operator's own NAS Ops bot, not this
-    bot's token — the operator may never have messaged this bot, so it
-    can't push to them directly."""
+async def _startup_model_check(ollama_url: str, model: str) -> None:
+    """Confirms the local backup model is installed without loading it onto
+    the GPU. Alerted via the operator's own NAS Ops bot: the operator may never
+    have messaged this bot, so it can't push to them directly."""
     try:
-        problems = await check_models(ollama_url, (_DEFAULT_FRIEND_BOT_MODEL_ENTRY,))
-    except Exception:
-        logger.exception("startup model liveness check itself failed (non-fatal)")
-        return
-    if problems:
-        alert = "⚠️ Friend bot: a model check failed:\n" + "\n".join(problems)
-        logger.error(alert)
-        await send_to_operator(alert)
+        async with httpx.AsyncClient(base_url=ollama_url, timeout=15.0) as http:
+            resp = await http.post("/api/show", json={"model": model})
+    except httpx.HTTPError as exc:
+        problem = f"Ollama unreachable at {ollama_url}: {exc}"
+    else:
+        if resp.status_code == 200:
+            return
+        problem = f"{model} is not installed (HTTP {resp.status_code}); run `ollama pull {model}`"
+    alert = f"⚠️ Friend bot: its local backup model won't work if Claude fails. {problem}"
+    logger.error(alert)
+    await send_to_operator(alert)
 
 
 async def run_bot() -> None:
@@ -827,22 +861,12 @@ async def run_bot() -> None:
     chat_states = _load_chat_states()
     pending_seen = _load_pending_seen()
     logger.info(
-        "Friend bot polling started (model=%s, %d allowed chat_ids)",
-        settings.ollama_friend_bot_model,
+        "Friend bot polling started (Claude first, local backup %s, %d allowed chat_ids)",
+        settings.friend_bot_local_model,
         len(allowed_chat_ids),
     )
 
-    # Startup liveness check for this bot's own model — catches a retired
-    # cloud model (e.g. qwen3-coder:480b-cloud, retired 2026-07-15 and not
-    # noticed here for 6+ days because the service never crashed, it just
-    # 410'd on every real message) at boot instead of after N silently
-    # failed replies. Fired as a background task, NOT awaited: model_health's
-    # per-model timeout is deliberately generous (up to ~5 min, to tolerate a
-    # genuine cold-start rather than mistake it for a dead model — see its
-    # own comment), and awaiting that here would leave the bot looking "down"
-    # (not polling Telegram at all) for up to ~10 minutes after every
-    # restart. The poll loop starts immediately either way.
-    asyncio.create_task(_startup_model_check(settings.ollama_url))
+    asyncio.create_task(_startup_model_check(settings.ollama_url, settings.friend_bot_local_model))
     offset: int | None = None
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT_S + 10) as http:
         while True:
@@ -896,10 +920,13 @@ async def run_bot() -> None:
                         if cb_id:
                             await _answer_callback(token, cb_id, "Approved ✅")
                         if cb_chat and cb_mid:
-                            await _edit_message_text(token, cb_chat, cb_mid, f"✅ Approved — id {target} can now use the bot.")
+                            await _edit_message_text(
+                                token, cb_chat, cb_mid, f"✅ Approved — id {target} can now use the bot."
+                            )
                         try:
                             await send_message(
-                                token, target,
+                                token,
+                                target,
                                 "You're all set! Ask me for any movie or show and I'll send it to "
                                 "the owner to approve.",
                             )
@@ -910,7 +937,9 @@ async def run_bot() -> None:
                         if cb_id:
                             await _answer_callback(token, cb_id, "Declined")
                         if cb_chat and cb_mid:
-                            await _edit_message_text(token, cb_chat, cb_mid, f"🚫 Declined — id {target} was not added.")
+                            await _edit_message_text(
+                                token, cb_chat, cb_mid, f"🚫 Declined — id {target} was not added."
+                            )
                         logger.info("enrollment declined: chat_id=%s", target)
                     continue
 
@@ -952,7 +981,6 @@ async def run_bot() -> None:
                 requester_name = str(frm.get("first_name") or frm.get("username") or "a friend").strip()[:80]
                 state = chat_states.get(chat_id, ChatState(history=[], pending_action=None, known_entity_ids={}))
 
-                # Photo of a poster → identify it (OCR) and offer to add it.
                 photo = message.get("photo")
                 if photo:
                     logger.info("photo from chat_id=%s (%d sizes)", chat_id, len(photo))

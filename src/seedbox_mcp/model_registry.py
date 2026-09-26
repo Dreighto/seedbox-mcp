@@ -41,10 +41,6 @@ PHOTO_IDENTIFY_MODEL = CloudModel("deepseek-v4-pro:cloud", "NAS Ops bot: photo/p
 # when the operator's message signals diagnostic intent. See telegram_bot.py.
 INVESTIGATE_MODEL = CloudModel("deepseek-v4-pro:cloud", "NAS Ops bot: investigate/diagnose model")
 
-# Friend-facing bot's only chat model — every message from an allowed friend
-# routes through this one.
-DEFAULT_FRIEND_BOT_MODEL = CloudModel("gpt-oss:20b-cloud", "Friend bot: default chat model")
-
 # Scheduled daily digest — a background batch job, so quality over latency.
 DEFAULT_DIGEST_MODEL = CloudModel("deepseek-v4-pro:cloud", "Digest: scheduled report model")
 
@@ -55,7 +51,6 @@ ALL_MODELS: tuple[CloudModel, ...] = (
     DEFAULT_BOT_MODEL,
     PHOTO_IDENTIFY_MODEL,
     INVESTIGATE_MODEL,
-    DEFAULT_FRIEND_BOT_MODEL,
     DEFAULT_DIGEST_MODEL,
     DEFAULT_MONITOR_MODEL,
 )
