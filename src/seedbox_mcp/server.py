@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from seedbox_mcp.config import Settings, load_settings
+from seedbox_mcp.config import Settings, configure_logging, load_settings
 from seedbox_mcp.import_diagnosis import nas_import_diagnosis
 from seedbox_mcp.oauth import OAuthStore
 from seedbox_mcp.runtime import Services, build_services
@@ -1282,7 +1282,7 @@ def create_app(settings: Settings | None = None) -> ASGIApp:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+    configure_logging("%(levelname)s %(name)s: %(message)s")
     settings = load_settings()
     logger.info(
         "Starting Seedbox MCP with config: %s",

@@ -13,7 +13,7 @@ from fastmcp import Client
 
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.model_health import check_models
 from seedbox_mcp.model_registry import ALL_MODELS
@@ -92,6 +92,7 @@ MONITOR_READ_ONLY_TOOLS: set[str] = {
     # so the LLM can see a container's actual state when deciding whether a
     # persistent (already-restarted) outage needs escalation.
     "nas_service_status",
+    "nas_import_diagnosis",
 }
 
 # Tools the monitor can use WITHOUT an LLM in the loop, via deterministic
@@ -160,6 +161,18 @@ that's been sitting a long time (nasdoom_requests_action), or a clearly \
 mismatched Plex item with an obvious correct match (nasdoom_match_apply). \
 If you fix any of these, that outcome belongs in your report — say what \
 was wrong and what you did, even though nobody asked you to.
+
+Import-blocked queue items are NOT automatically a problem, and they are \
+almost never a permissions or path issue. If nasdoom_queue shows \
+importblocked / importPending items, call nas_import_diagnosis BEFORE \
+flagging or escalating. Trust that tool's diagnosis field:
+- not_an_upgrade (including Sonarr's "Not a Custom Format upgrade"): the \
+library already has an equal or better file. This is healthy. Do not page \
+the operator, do not say permissions, do not escalate_to_worker.
+- match_problem / sample_file / download_permissions / library_permissions \
+/ path_not_found: those are real; report or escalate as appropriate.
+Never invent "likely a permissions or path issue" from an importblocked \
+count alone.
 
 Everything else needs real verification before you treat it as worth \
 flagging to the operator — this is the "not a false flag" bar. A single \
@@ -348,7 +361,9 @@ async def _deterministic_service_recovery(mcp_client: Client[Any], now_ts: float
         verified = (rd.get("data") or {}).get("verified_running")
         ok = bool(rd.get("ok")) and verified is not False
         record_action(
-            "nas_service_restart", args, dry_run=False,
+            "nas_service_restart",
+            args,
+            dry_run=False,
             outcome="ok" if ok else f"failed: verified_running={verified}",
         )
         state[name] = now_ts
@@ -395,11 +410,9 @@ async def _deterministic_storage_check(mcp_client: Client[Any]) -> str | None:
     reports, never acts."""
     async with mcp_client:
         result = await mcp_client.call_tool("nasdoom_control", {})
-    data = (_extract(result).get("data") or {})
+    data = _extract(result).get("data") or {}
     sections = data.get("sections") if isinstance(data, dict) else None
-    storage_section = next(
-        (s for s in sections or [] if isinstance(s, dict) and s.get("id") == "storage"), None
-    )
+    storage_section = next((s for s in sections or [] if isinstance(s, dict) and s.get("id") == "storage"), None)
     pools = (storage_section or {}).get("data") or []
     notes = []
     for pool in pools:
@@ -699,7 +712,7 @@ def _save_alert_state(state: dict[str, Any]) -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run one NAS monitor cycle; push to Telegram only if alert-worthy.")
     parser.add_argument("--model", default=None, help=f"Ollama model tag (default: {DEFAULT_MONITOR_MODEL}).")
     parser.add_argument("--no-telegram", action="store_true", help="Print only, skip the Telegram push.")
@@ -746,8 +759,7 @@ def main() -> None:
             )
         else:
             logger.warning(
-                "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + "
-                "NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
+                "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
             )
 
 

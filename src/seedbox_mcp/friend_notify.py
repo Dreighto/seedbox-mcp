@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.errors import MediaMcpError
 from seedbox_mcp.friend_tracking import list_tracked, save_tracked
 from seedbox_mcp.runtime import build_services
@@ -83,7 +83,7 @@ async def run_once() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     asyncio.run(run_once())
 
 

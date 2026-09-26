@@ -112,6 +112,9 @@ async def staleness_report(
         if include_missing:
             plex_titles = {str(item.get("title", "")).casefold() for item in plex_items}
             plex_file_paths = {path for item in plex_items for path in item.get("file_paths") or []}
+            plex_folder_paths = {
+                str(path).rstrip("/") for item in plex_items for path in item.get("folder_paths") or []
+            }
             missing: list[dict[str, Any]] = []
             if media_type in ("movies", "all"):
                 missing += [
@@ -120,10 +123,17 @@ async def staleness_report(
                     if not item.get("hasFile") or not _movie_file_in_plex(item, plex_file_paths)
                 ]
             if media_type in ("tv", "all"):
+                # Title-only matching false-positives whenever Sonarr's disambiguated
+                # title differs from Plex's agent-matched title ("Fruits Basket (2019)"
+                # vs "Fruits Basket", "Re:Monster" vs "Re: Monster", "Dragon Ball Kai" vs
+                # "Dragon Ball Z Kai") — on the real library that flagged 5 fully-present
+                # anime series (~845GB) as missing. Cross-check by Sonarr's series folder
+                # path before calling something missing, same as the movie check above.
                 missing += [
                     compact_series(item)
                     for item in sonarr_series
                     if str(item.get("title", "")).casefold() not in plex_titles
+                    and not _series_folder_in_plex(item, plex_folder_paths)
                 ]
             data["managed_missing_from_plex"] = missing[:bounded]
         data["queue_warnings"] = [
@@ -231,6 +241,11 @@ def _stuck(item: dict[str, Any]) -> bool:
     state = str(item.get("trackedDownloadState") or item.get("trackedDownloadStatus") or "").lower()
     status = str(item.get("status") or "").lower()
     return any(marker in state or marker in status for marker in ["warning", "failed", "blocked", "pending"])
+
+
+def _series_folder_in_plex(series: dict[str, Any], plex_folder_paths: set[str]) -> bool:
+    path = series.get("path")
+    return bool(path) and str(path).rstrip("/") in plex_folder_paths
 
 
 def _movie_file_in_plex(movie: dict[str, Any], plex_file_paths: set[str]) -> bool:

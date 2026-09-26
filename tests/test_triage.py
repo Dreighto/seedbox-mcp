@@ -72,13 +72,13 @@ def test_render_groups_and_counts():
     ]
     text, markup = render_triage(findings)
     assert markup is None
-    assert "2 need attention" in text
-    assert "NEEDS FIX (1)" in text
-    assert "WATCH (1)" in text
-    assert "AUTO-FIXED THIS CYCLE (1)" in text
-    assert "HEALTHY (2)" in text
+    assert "2 need your attention" in text
     assert "Import stuck" in text
-    assert "tmdb 1" in text
+    assert "2 requests waiting" in text
+    assert "✅ Queue resumed" in text
+    assert "Everything else normal (2 checked)" in text
+    assert "Disks" not in text
+    assert "tmdb 1" not in text
 
 
 def test_render_escapes_html():
@@ -90,8 +90,9 @@ def test_render_escapes_html():
 
 def test_render_all_healthy_has_no_attention_header():
     text, _ = render_triage([_f(severity="healthy", title="Disks")])
-    assert "need attention" not in text
-    assert "HEALTHY (1)" in text
+    assert "all clear" in text
+    assert "need your attention" not in text
+    assert "Everything else normal (1 checked)" in text
 
 
 def test_fingerprint_actionable_only_and_order_independent():

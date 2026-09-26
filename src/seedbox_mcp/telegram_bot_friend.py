@@ -14,7 +14,7 @@ from fastmcp import Client
 from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands
 from seedbox_mcp.chat import subscription_models
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn, trim_history
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.model_health import check_models
 from seedbox_mcp.model_registry import DEFAULT_FRIEND_BOT_MODEL as _DEFAULT_FRIEND_BOT_MODEL_ENTRY
 from seedbox_mcp.notify_operator import send_to_operator
@@ -974,7 +974,7 @@ async def run_bot() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     asyncio.run(run_bot())
 
 

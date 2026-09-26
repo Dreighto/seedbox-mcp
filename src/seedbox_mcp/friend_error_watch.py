@@ -9,7 +9,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.telegram import send_message
 
 logger = logging.getLogger("seedbox_mcp.friend_error_watch")
@@ -170,7 +170,7 @@ async def run_once() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     asyncio.run(run_once())
 
 

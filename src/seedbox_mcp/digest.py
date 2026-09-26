@@ -14,7 +14,7 @@ from seedbox_mcp.chat.ollama_ai import (
     ESCALATION_TOOLS,
     run_agent_turn,
 )
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.graduation import graduation_nudge
 from seedbox_mcp.model_registry import DEFAULT_DIGEST_MODEL as _DEFAULT_DIGEST_MODEL_ENTRY
 from seedbox_mcp.telegram import send_message_html
@@ -176,7 +176,7 @@ DEFAULT_TASK = (
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run a one-shot NAS housekeeping digest.")
     parser.add_argument("--task", default=DEFAULT_TASK, help="Override the digest task prompt.")
     parser.add_argument("--model", default=None, help=f"Ollama model tag (default: {DEFAULT_DIGEST_MODEL}).")

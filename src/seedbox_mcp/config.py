@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 from pydantic import Field, HttpUrl, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def configure_logging(fmt: str = "%(asctime)s %(name)s %(message)s") -> None:
+    logging.basicConfig(level=logging.INFO, format=fmt)
+    # httpx logs every request URL at INFO, and Telegram puts the bot token in the URL.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
 
 SECRET_KEYS = ("TOKEN", "API_KEY", "PASSWORD", "SECRET", "AUTHORIZATION")
 

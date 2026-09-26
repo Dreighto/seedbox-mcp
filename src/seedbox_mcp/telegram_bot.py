@@ -20,7 +20,7 @@ from seedbox_mcp.chat.ollama_ai import (
     run_agent_turn,
     trim_history,
 )
-from seedbox_mcp.config import Settings
+from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.model_health import check_models
 from seedbox_mcp.model_registry import DEFAULT_BOT_MODEL as _DEFAULT_BOT_MODEL_ENTRY
 from seedbox_mcp.model_registry import INVESTIGATE_MODEL as _INVESTIGATE_MODEL_ENTRY
@@ -332,6 +332,10 @@ run this before blocklisting or re-grabbing. It reads the arr's OWN reason \
 first (a title/match mismatch, a sample, a not-an-upgrade skip) and only \
 falls back to a filesystem access check for genuine permission/path cases. \
 Never just blocklist an import failure. Route by diagnosis:
+  - not_an_upgrade (including "Not a Custom Format upgrade"): the library \
+already has an equal or better file. This is NOT permissions. Clear the \
+queue item with sonarr_queue_action/radarr_queue_action action=blocklist \
+so the leftover download stops sitting in importblocked; do not escalate.
   - match_problem where the title simply ISN'T IN THE LIBRARY ("Unknown \
 Series"/unknown movie): this is fixable. Search the title to get its \
 tmdb_id, then nasdoom_fix_import(kind, tmdb_id) — it adds the missing title \
@@ -1196,7 +1200,7 @@ async def run_bot() -> None:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+    configure_logging()
     asyncio.run(run_bot())
 
 
