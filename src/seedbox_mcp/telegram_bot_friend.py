@@ -461,7 +461,10 @@ true streaming quality, and ask if they still want it. ONLY if they \
 clearly say yes to that, grab that specific copy with nasdoom_grab_release \
 (confirm=false to preview, then confirm=true). Never grab a low-quality \
 copy without that explicit "yes, I know it's low quality" — and always \
-prefer the normal request when a proper copy is or will be available.
+prefer the normal request when a proper copy is or will be available. If you \
+make a normal request for something that only has theater recordings right \
+now, say it will wait for a proper copy, usually when it comes out digitally, \
+so it may be a while.
 
 Show posters, they are how people recognize a title: whenever you point to \
 a specific title (a search result you're offering to add, confirming what \
@@ -592,6 +595,10 @@ message the owner directly. Just tell me what you're looking for.
 """
 
 
+_UNREADABLE_KINDS = ("voice", "audio", "video", "video_note", "sticker", "animation", "document")
+UNREADABLE_REPLY = "I can only read typed messages and photos for now. Just type what you're looking for!"
+
+
 class FriendBotSettings(Settings):
     ollama_url: str = DEFAULT_OLLAMA_URL
     friend_bot_local_model: str = LOCAL_BACKUP_MODEL
@@ -641,7 +648,7 @@ _PUNT_RE = re.compile(
     r"(one sec\b|give me a (second|sec|moment|minute)|hold on\b|hang tight\b|hang on\b"
     r"|be right back|checking now\b|searching now\b|looking into it"
     r"|let me (check|search|look|see what|find|dig)"
-    r"|i['’]ll (go ahead and|check|search|look|see what|find|get back to you))",
+    r"|i['’]ll (go ahead and|check|search|look|see what|get back to you))",
     re.IGNORECASE,
 )
 
@@ -676,10 +683,10 @@ _PUNT_FALLBACK = "Sorry, I couldn't finish that one just now. Ask me again and I
 # happen (Jellyseerr can lag reality after a Plex purge) and when they do the
 # honest move is to check again, not gaslight the person about their device.
 _DISPUTE_RE = re.compile(
-    r"(not there|isn['’]t there|not on plex|isn['’]t on plex|aint on plex|ain['’]t on plex"
+    r"(not there|isn['’]?t there|not on plex|isn['’]?t on plex|aint on plex|ain['’]t on plex"
     r"|can['’]?t find|cant find|can['’]?t see|cant see|doesn['’]?t show|doesnt show"
     r"|nothing shows up|nothing there|missing|doesn['’]?t work|doesnt work"
-    r"|not available|isn['’]t available|isn['’]t showing up|isnt showing up"
+    r"|not available|isn['’]?t available|isn['’]?t showing up|isnt showing up"
     r"|it['’]s not showing|its not showing)",
     re.IGNORECASE,
 )
@@ -691,13 +698,17 @@ _PRIOR_CLAIM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# "Message the owner" is not blame on its own: the prompt tells the bot to say
+# it for anything it can't do (playback, accounts).
 _BLAME_USER_RE = re.compile(
-    r"(playback issue|your end|setting on your end|settings on your end"
-    r"|on your end|your device|your app|your client"
-    r"|message the owner|contact the owner|reach out to the owner"
-    r"|troubleshoot on your side|check your)",
+    r"(playback issue|settings? on your end|your device|your app|your client|troubleshoot|check your)",
     re.IGNORECASE,
 )
+
+
+def _acted_since(history: list[dict[str, Any]], start: int) -> bool:
+    return any(isinstance(m, dict) and m.get("tool_calls") for m in history[start:])
+
 
 _BLAME_USER_CONTINUATION = (
     "(system note, the person did not say this: your last reply blamed the person "
@@ -769,11 +780,18 @@ async def _handle_message(
             **turn_kwargs,
         )
         logger.info("reply: %r", reply)
-        # Punt guard: the reply promised to act "in a second" — force it to
-        # actually do the work now, in this same handler, so the person gets
-        # a real answer instead of a promise that never resolves.
+        # Punt guard: the reply promised to act "in a second" without having
+        # called a tool — force it to do the work now, in this same handler, so
+        # the person gets a real answer instead of a promise that never resolves.
+        # A turn that did act is reporting, not promising ("I'll find more if you
+        # want", "both are sent to the owner").
+        turn_start = len(state.get("history", []) or [])
+
+        def punted(reply: str) -> bool:
+            return bool(reply.strip() and _PUNT_RE.search(reply)) and not _acted_since(new_history, turn_start)
+
         attempts = 0
-        while reply.strip() and _PUNT_RE.search(reply) and attempts < 2:
+        while punted(reply) and attempts < 2:
             attempts += 1
             logger.warning("punt detected (attempt %d), forcing continuation: %r", attempts, reply[:120])
             reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(
@@ -784,7 +802,7 @@ async def _handle_message(
                 **turn_kwargs,
             )
             logger.info("continuation reply: %r", reply)
-        if reply.strip() and _PUNT_RE.search(reply):
+        if punted(reply):
             # still punting after two forced continuations — be honest instead
             logger.error("punt persisted after %d continuations; sending honest fallback", attempts)
             reply = _PUNT_FALLBACK
@@ -805,9 +823,9 @@ async def _handle_message(
         bot_previously_claimed = bool(_PRIOR_CLAIM_RE.search(prev_bot_msg))
         reply_blames = bool(reply.strip() and _BLAME_USER_RE.search(reply))
 
-        # Trigger: EITHER (user disputes + prior claim + current reply blames)
-        # OR (current reply just blames outright)
-        should_reverify = (user_disputes and bot_previously_claimed) or reply_blames
+        # Only when the person is pushing back: a reply that merely sends them to
+        # the owner for something the bot can't do is the prompt working.
+        should_reverify = user_disputes and (bot_previously_claimed or reply_blames)
 
         blame_attempts = 0
         while should_reverify and blame_attempts < 2:
@@ -831,7 +849,7 @@ async def _handle_message(
             reply_blames = bool(reply.strip() and _BLAME_USER_RE.search(reply))
             should_reverify = reply_blames  # re-check only the reply on subsequent passes
 
-        if reply.strip() and _BLAME_USER_RE.search(reply):
+        if user_disputes and reply.strip() and _BLAME_USER_RE.search(reply):
             logger.error("blame-user pattern persisted after %d continuations; sending honest fallback", blame_attempts)
             reply = _BLAME_USER_FALLBACK
     except Exception:
@@ -1019,6 +1037,9 @@ async def run_bot() -> None:
                     continue
 
                 if not text:
+                    # Silence reads as a broken bot to someone who just sent a voice note.
+                    if any(k in message for k in _UNREADABLE_KINDS):
+                        await send_message(token, chat_id, UNREADABLE_REPLY)
                     continue
                 logger.info("message from chat_id=%s: %r", chat_id, text)
                 if text.strip().split()[0].split("@")[0] in ("/help", "/start"):

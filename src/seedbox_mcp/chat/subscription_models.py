@@ -181,6 +181,12 @@ def parse_step(text: str) -> dict[str, Any]:
         if not isinstance(arguments, dict):
             raise ValueError(f"tool call arguments are not an object: {call!r}")
         tool_calls.append({"function": {"name": call["name"], "arguments": arguments}})
+    if not tool_calls and content.lstrip().startswith("{"):
+        # Models sometimes nest the whole step inside "content"; the inner one is the real step.
+        try:
+            return parse_step(content)
+        except (ValueError, json.JSONDecodeError):
+            pass
     return {"content": content, "tool_calls": tool_calls}
 
 

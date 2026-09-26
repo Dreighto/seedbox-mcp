@@ -103,3 +103,54 @@ async def test_stubborn_punt_gets_honest_fallback(monkeypatch: pytest.MonkeyPatc
 
     # after 2 forced continuations it gives up HONESTLY — never ships the punt
     assert sent == [_PUNT_FALLBACK]
+
+
+
+def _wire(monkeypatch: pytest.MonkeyPatch, turns: list, sent: list[str], calls: list[str]) -> None:
+    replies = iter(turns)
+
+    async def fake_turn(task, **kwargs):
+        calls.append(task)
+        return next(replies)
+
+    async def fake_send_reply(token, chat_id, reply):
+        sent.append(reply)
+
+    class _NoopHTTP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(bot, "run_agent_turn", fake_turn)
+    monkeypatch.setattr(bot, "_send_reply", fake_send_reply)
+    monkeypatch.setattr(bot.httpx, "AsyncClient", lambda **k: _NoopHTTP())
+    monkeypatch.setattr(bot, "Client", lambda *a, **k: object())
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_acted_is_not_a_punt(monkeypatch: pytest.MonkeyPatch) -> None:
+    confirmation = "Both are sent to the owner to approve. I'll check back if you ask me later."
+    acted = [
+        {"role": "user", "content": "add both"},
+        {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "nasdoom_friend_request"}}]},
+        {"role": "tool", "content": "{}"},
+        {"role": "assistant", "content": confirmation},
+    ]
+    sent: list[str] = []
+    calls: list[str] = []
+    _wire(monkeypatch, [(confirmation, acted, None, {})], sent, calls)
+    state = ChatState(history=[], pending_action=None, known_entity_ids={})
+    await bot._handle_message(bot.FriendBotSettings(), "tok", 1, "add both", state, "Pat")
+    assert calls == ["add both"]
+    assert sent == [confirmation]
+
+
+def test_an_offer_to_find_more_is_not_a_punt() -> None:
+    assert not _PUNT_RE.search(
+        "I can't help with that one. Tell me what you're in the mood for and I'll find something."
+    )
