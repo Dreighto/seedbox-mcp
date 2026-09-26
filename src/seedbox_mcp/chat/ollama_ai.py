@@ -404,8 +404,10 @@ async def run_agent_turn(
     the rest of this turn's model steps go to these subscription backends in
     order (see subscription_models.py); tools still run here, through every
     gate above. If all of them fail, the original 429 is raised as before.
-    Pass subscription_models.NO_FILE_ACCESS for chats with people outside
-    the household, and () to turn the fallback off."""
+    The default suits the operator's own chats and jobs: Codex and Cursor run
+    jailed, but can still read their own login state. Pass
+    subscription_models.CLAUDE_ONLY for chats with people outside the
+    household, and () to turn the fallback off."""
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
     known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS

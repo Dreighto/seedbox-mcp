@@ -3,12 +3,16 @@ answers 429 (its weekly usage limit).
 
 Operator rule (2026-09-26): Ollama models while they have quota, otherwise the
 models his subscriptions pay for. Each backend here only picks the next reply or
-tool call, answered as one JSON object; run_agent_turn still executes every tool
-call itself, so the allowlist, the preview/confirm gate, the entity-id check and
-the rate limit apply exactly as they do for Ollama.
+tool call, answered as one JSON object; run_agent_turn still executes every MCP
+tool call itself, through the allowlist, the preview/confirm gate, the entity-id
+check and the rate limit.
 
-The real binaries in ~/.local/bin are called, never the agent-defaults wrappers
-earlier on an interactive PATH: those add permission-skipping flags.
+Claude runs with no tools at all. Codex and Cursor keep their own read tools, so
+they run in a bubblewrap jail whose home holds only their own login state: the
+conversation and tool results are untrusted text and must not be able to steer
+them into reading anything else on this machine. The real binaries are called,
+never the agent-defaults wrappers on an interactive PATH, which add
+permission-skipping flags.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -31,9 +36,13 @@ CLAUDE_MODEL = "sonnet"
 CURSOR_MODEL = "grok-4.7-medium"
 
 ALL_BACKENDS: tuple[str, ...] = ("claude", "codex", "cursor")
-# Codex and Cursor can still read files on this machine (read-only), so a chat
-# with people outside the household gets Claude only, which runs with no tools.
-NO_FILE_ACCESS: tuple[str, ...] = ("claude",)
+# Codex and Cursor can still read their own login state inside the jail, so a
+# chat with people outside the household gets Claude only.
+CLAUDE_ONLY: tuple[str, ...] = ("claude",)
+
+# Paths under HOME each jailed backend needs: its state (read-write) and its program (read-only).
+_JAIL_STATE = {"codex": (".codex",), "cursor": (".cursor", ".config/cursor")}
+_JAIL_PROGRAM = {"codex": (), "cursor": (".local/share/cursor-agent",)}
 
 INSTRUCTIONS = """You are the model inside a tool-using assistant. Reply to the conversation \
 below with ONE JSON object and nothing else, shaped:
@@ -82,6 +91,44 @@ def parse_step(text: str) -> dict[str, Any]:
     return {"content": content, "tool_calls": tool_calls}
 
 
+def _envelope_result(out: str) -> str:
+    envelope = json.loads(out)
+    result = envelope.get("result") if isinstance(envelope, dict) else None
+    if not isinstance(result, str):
+        raise ValueError(f"no result text in CLI output: {out[:160]!r}")
+    return result
+
+
+def _jail(backend: str) -> list[str]:
+    bwrap = shutil.which("bwrap")
+    if bwrap is None:
+        raise OSError(f"bubblewrap (bwrap) is not installed; {backend} is not run without its jail")
+    prefix = [
+        bwrap,
+        "--ro-bind", "/usr", "/usr",
+        "--symlink", "usr/bin", "/bin",
+        "--symlink", "usr/lib", "/lib",
+        "--symlink", "usr/lib64", "/lib64",
+        "--symlink", "usr/sbin", "/sbin",
+        "--ro-bind", "/etc", "/etc",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+        "--tmpfs", str(HOME),
+        "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
+    ]  # fmt: skip
+    resolver = Path("/run/systemd/resolve")
+    if resolver.is_dir():
+        prefix += ["--ro-bind", str(resolver), str(resolver)]
+    for rel in _JAIL_STATE[backend]:
+        if (HOME / rel).is_dir():
+            prefix += ["--bind", str(HOME / rel), str(HOME / rel)]
+    for rel in _JAIL_PROGRAM[backend]:
+        if (HOME / rel).is_dir():
+            prefix += ["--ro-bind", str(HOME / rel), str(HOME / rel)]
+    return [*prefix, "--bind", str(WORKDIR), str(WORKDIR), "--chdir", str(WORKDIR)]
+
+
 def _child_env() -> dict[str, str]:
     return {
         "PATH": f"{BIN}:/usr/local/bin:/usr/bin:/bin",
@@ -102,12 +149,13 @@ async def _run(argv: list[str], stdin: str, timeout_s: float) -> str:
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(stdin.encode()), timeout_s)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
-        raise
+    finally:
+        # A timeout or a cancelled turn must not leave a CLI running on the subscription.
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
     if proc.returncode != 0:
-        raise RuntimeError(f"{Path(argv[0]).name} exited {proc.returncode}: {err.decode(errors='replace')[:200]}")
+        raise RuntimeError(f"exited {proc.returncode}: {err.decode(errors='replace')[:200]}")
     return out.decode(errors="replace")
 
 
@@ -116,25 +164,15 @@ async def _claude(prompt: str, timeout_s: float) -> str:
     # session is saved, so these calls never show up as his own conversations.
     out = await _run(
         [
-            str(BIN / "claude"),
-            "-p",
-            "--model",
-            CLAUDE_MODEL,
-            "--tools",
-            "",
-            "--setting-sources",
-            "",
-            "--no-session-persistence",
-            "--disable-slash-commands",
-            "--output-format",
-            "json",
-            "--system-prompt",
-            "Answer with exactly the one JSON object the user message asks for.",
+            str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "",
+            "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
+            "--output-format", "json",
+            "--system-prompt", "Answer with exactly the one JSON object the user message asks for.",
         ],
         prompt,
         timeout_s,
-    )
-    return str(json.loads(out)["result"])
+    )  # fmt: skip
+    return _envelope_result(out)
 
 
 async def _codex(prompt: str, timeout_s: float) -> str:
@@ -142,32 +180,25 @@ async def _codex(prompt: str, timeout_s: float) -> str:
     try:
         await _run(
             [
-                str(BIN / "codex"),
-                "exec",
-                "--skip-git-repo-check",
-                "--sandbox",
-                "read-only",
-                "--ephemeral",
-                "-C",
-                str(WORKDIR),
-                "-o",
-                str(answer),
-                "-",
+                *_jail("codex"), str((BIN / "codex").resolve()), "exec", "--skip-git-repo-check",
+                "--sandbox", "read-only", "--ephemeral", "-C", str(WORKDIR), "-o", str(answer), "-",
             ],
             prompt,
             timeout_s,
-        )
+        )  # fmt: skip
         return answer.read_text()
     finally:
         answer.unlink(missing_ok=True)
 
 
 async def _cursor(prompt: str, timeout_s: float) -> str:
+    cursor = str((BIN / "cursor-agent").resolve())
     # Cursor's login token lasts an hour; `status` renews it before the real call.
-    await _run([str(BIN / "cursor-agent"), "status"], "", 60.0)
+    await _run([*_jail("cursor"), cursor, "status"], "", 60.0)
     out = await _run(
         [
-            str(BIN / "cursor-agent"),
+            *_jail("cursor"),
+            cursor,
             "-p",
             "--mode",
             "ask",
@@ -180,7 +211,7 @@ async def _cursor(prompt: str, timeout_s: float) -> str:
         prompt,
         timeout_s,
     )
-    return str(json.loads(out)["result"])
+    return _envelope_result(out)
 
 
 RUNNERS: dict[str, Callable[[str, float], Awaitable[str]]] = {"claude": _claude, "codex": _codex, "cursor": _cursor}
@@ -199,7 +230,7 @@ async def step(
     for name in backends:
         try:
             return parse_step(await RUNNERS[name](prompt, timeout_s)), name
-        except (OSError, RuntimeError, ValueError, KeyError, TimeoutError) as exc:
-            logger.warning("subscription model %s failed: %s", name, exc)
+        except Exception as exc:  # noqa: BLE001 - any CLI failure or odd output moves on to the next backend
+            logger.warning("subscription model %s failed: %s: %s", name, type(exc).__name__, exc)
             failures.append(f"{name}: {type(exc).__name__}: {exc}")
     raise SubscriptionModelsUnavailable("; ".join(failures) or "no backends configured")

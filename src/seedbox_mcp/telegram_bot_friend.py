@@ -703,7 +703,7 @@ async def _handle_message(
         tool_arg_overrides={
             "nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}
         },
-        fallback_models=subscription_models.NO_FILE_ACCESS,
+        fallback_models=subscription_models.CLAUDE_ONLY,
     )
     try:
         reply, new_history, new_pending_action, new_known_entity_ids = await run_agent_turn(

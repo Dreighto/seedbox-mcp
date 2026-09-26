@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -57,7 +58,7 @@ def test_parse_step_reads_fenced_json_and_rejects_prose() -> None:
 
 
 def test_friend_chats_get_claude_only() -> None:
-    assert subscription_models.NO_FILE_ACCESS == ("claude",)
+    assert subscription_models.CLAUDE_ONLY == ("claude",)
     assert subscription_models.ALL_BACKENDS[0] == "claude"
 
 
@@ -170,3 +171,42 @@ async def test_usage_limit_is_not_reported_as_a_dead_model() -> None:
     assert await model_health.check_model(OLLAMA, "m:cloud") is None
     respx.post(f"{OLLAMA}/api/chat").mock(return_value=httpx.Response(410, json={"error": "model retired"}))
     assert await model_health.check_model(OLLAMA, "m:cloud") == "HTTP 410: model retired"
+
+
+@pytest.mark.asyncio
+async def test_jail_hides_home_except_the_backend_state(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    if subscription_models.shutil.which("bwrap") is None:
+        pytest.skip("bubblewrap is not installed")
+    home = tmp_path / "home"
+    for rel in (".codex", ".ssh", "dev"):
+        (home / rel).mkdir(parents=True)
+    (home / ".ssh" / "id_ed25519").write_text("secret")
+    monkeypatch.setattr(subscription_models, "HOME", home)
+    monkeypatch.setattr(subscription_models, "WORKDIR", home / ".local/state/fallback")
+    subscription_models.WORKDIR.mkdir(parents=True)
+    listing = await subscription_models._run([*subscription_models._jail("codex"), "/bin/ls", "-A", str(home)], "", 30)
+    assert sorted(listing.split()) == [".codex", ".local"]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_turn_kills_the_cli(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subscription_models, "WORKDIR", tmp_path)
+    marker = tmp_path / "still-running"
+    task = asyncio.create_task(subscription_models._run(["/bin/sh", "-c", f"sleep 1; touch {marker}"], "", 30))
+    await asyncio.sleep(0.2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(1.3)
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_non_object_cli_output_moves_on_to_the_next_backend(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def listy(prompt: str, timeout_s: float) -> str:
+        return subscription_models._envelope_result("[1, 2]")
+
+    monkeypatch.setitem(subscription_models.RUNNERS, "claude", listy)
+    monkeypatch.setitem(subscription_models.RUNNERS, "codex", scripted(['{"content": "ok", "tool_calls": []}'], []))
+    message, backend = await subscription_models.step([{"role": "user", "content": "hi"}], [], ("claude", "codex"), 5)
+    assert (message["content"], backend) == ("ok", "codex")
