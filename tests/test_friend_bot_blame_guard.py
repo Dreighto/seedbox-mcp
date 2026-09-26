@@ -16,6 +16,8 @@ from seedbox_mcp.telegram_bot_friend import (
 
 def test_dispute_regex_catches_real_pushback() -> None:
     for dispute in (
+        "season 3 isnt there tho",
+        "its not there",
         "It's not there",
         "Not on Plex",
         "can't find it",
@@ -66,6 +68,8 @@ def test_blame_user_regex_ignores_non_blame_phrasing() -> None:
     for legit in (
         "I set it to download",
         "the owner already added it",
+        "Playback problems aren't something I can fix from here. Message the owner directly.",
+        "It's already lined up, so nothing to do on your end.",
     ):
         assert not _BLAME_USER_RE.search(legit), legit
 
@@ -172,3 +176,33 @@ async def test_blame_guard_falls_back_honestly_if_blame_persists(monkeypatch: py
     await bot._handle_message(settings, "tok", 1, "It's not there.", state, "Ivan")
 
     assert sent == [_BLAME_USER_FALLBACK]
+
+
+
+@pytest.mark.asyncio
+async def test_no_dispute_means_no_reverify(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply = "That's not something I can fix from here. It might be a playback issue, so message the owner."
+    fake_turn = AsyncMock(return_value=(reply, [{"role": "assistant"}], None, {}))
+    sent: list[str] = []
+
+    async def fake_send_reply(token, chat_id, text):
+        sent.append(text)
+
+    class _NoopHTTP:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, *a, **k):
+            return None
+
+    monkeypatch.setattr(bot, "run_agent_turn", fake_turn)
+    monkeypatch.setattr(bot, "_send_reply", fake_send_reply)
+    monkeypatch.setattr(bot.httpx, "AsyncClient", lambda **k: _NoopHTTP())
+    monkeypatch.setattr(bot, "Client", lambda *a, **k: object())
+    state = ChatState(history=[], pending_action=None, known_entity_ids={})
+    await bot._handle_message(bot.FriendBotSettings(), "tok", 1, "my show keeps buffering", state, "Leo")
+    assert fake_turn.await_count == 1
+    assert sent == [reply]

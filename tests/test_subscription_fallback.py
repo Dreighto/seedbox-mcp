@@ -437,3 +437,11 @@ async def test_claude_runs_with_no_tools_and_no_connectors(monkeypatch: pytest.M
     assert argv[argv.index("--allowedTools") + 1] == "WebSearch"
     assert "--strict-mcp-config" in argv and "--mcp-config" not in argv
     assert argv[argv.index("--setting-sources") + 1] == ""
+
+
+def test_a_step_nested_inside_content_is_unwrapped() -> None:
+    inner = {"content": "", "tool_calls": [{"name": "nasdoom_friend_request", "arguments": '{"tmdb_id": 19995}'}]}
+    message = subscription_models.parse_step(json.dumps({"content": json.dumps(inner), "tool_calls": []}))
+    assert message["tool_calls"] == [{"function": {"name": "nasdoom_friend_request", "arguments": {"tmdb_id": 19995}}}]
+    plain = subscription_models.parse_step(json.dumps({"content": "{not a step} but text", "tool_calls": []}))
+    assert plain == {"content": "{not a step} but text", "tool_calls": []}
