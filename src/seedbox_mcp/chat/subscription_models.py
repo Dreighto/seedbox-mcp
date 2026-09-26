@@ -7,8 +7,9 @@ tool call, answered as one JSON object; run_agent_turn still executes every MCP
 tool call itself, through the allowlist, the preview/confirm gate, the entity-id
 check and the rate limit.
 
-Claude and Codex run with no tools at all, and both are held to STEP_SCHEMA so
-a model can't answer in loose prose. Cursor keeps its own read tools. Codex and
+Claude runs with an empty tool allowlist. Codex runs with every tool feature
+disabled (it has no allowlist). Both are held to STEP_SCHEMA so a model can't
+answer in loose prose. Cursor keeps its own read tools. Codex and
 Cursor run in a bubblewrap jail whose home holds only their own login state:
 the conversation and tool results are untrusted text and must not be able to
 steer them into reading anything else on this machine. The real binaries are
@@ -19,7 +20,6 @@ permission-skipping flags.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 import os
@@ -36,13 +36,13 @@ BIN = HOME / ".local/bin"
 WORKDIR = HOME / ".local/state/seedbox-mcp/model-fallback"
 CLAUDE_MODEL = "sonnet"
 CODEX_MODEL = "gpt-6-sol"
-LUNA_MODEL = "gpt-6-luna"
 CURSOR_MODEL = "grok-4.7-medium"
 
 ALL_BACKENDS: tuple[str, ...] = ("claude", "codex", "cursor")
-# Cursor can still read its own login state inside the jail, so a chat with
-# people outside the household never reaches it.
-FRIEND_BACKENDS: tuple[str, ...] = ("claude", "luna")
+# Codex and Cursor keep their login state inside the jail, and neither CLI can
+# be given an empty tool allowlist the way Claude can, so a chat with people
+# outside the household gets Claude only.
+CLAUDE_ONLY: tuple[str, ...] = ("claude",)
 
 # Paths under HOME each jailed backend needs: its state (read-write) and its program (read-only).
 _JAIL_STATE = {"codex": (".codex",), "cursor": (".cursor", ".config/cursor")}
@@ -119,16 +119,17 @@ def _without_images(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def _name_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Labels each tool result with the tool it answers. Unlabeled, GPT models
-    don't match results to their calls and repeat the same call until the
-    round budget runs out."""
+    """Labels each tool result with the tool it answers, by position: every call
+    gets exactly one result message, in order. Unlabeled, GPT models don't
+    match results to their calls and repeat the same call until the round
+    budget runs out."""
     named: list[dict[str, Any]] = []
     pending: list[str] = []
     for message in messages:
         if message.get("role") == "assistant":
             pending = [(c.get("function") or {}).get("name", "") for c in message.get("tool_calls") or []]
         elif message.get("role") == "tool" and pending:
-            message = {"role": "tool", "tool_name": pending.pop(0), **message}
+            message = {**message, "tool_name": pending.pop(0)}
         named.append(message)
     return named
 
@@ -273,48 +274,21 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
     return _stream_result(out)
 
 
-def _codex_secrets() -> list[str]:
-    try:
-        auth = json.loads((HOME / ".codex/auth.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return []
-    values = [auth.get("OPENAI_API_KEY"), *(auth.get("tokens") or {}).values()]
-    return [v for v in values if isinstance(v, str) and len(v) >= SECRET_WINDOW]
-
-
-# Any run of this many characters from a login token counts as a leak.
-SECRET_WINDOW = 24
-
-
-def leaks_codex_login(answer: str) -> bool:
-    """Codex's login state sits inside its jail. It runs with every tool
-    feature off, so it can't read it; this is the check that doesn't depend
-    on that list staying complete across Codex releases."""
-    return any(
-        secret[i : i + SECRET_WINDOW] in answer
-        for secret in _codex_secrets()
-        for i in range(len(secret) - SECRET_WINDOW + 1)
-    )
-
-
-async def _codex_exec(model: str, prompt: str, timeout_s: float, images: list[str]) -> str:
-    # A private (0700) directory per call: concurrent chats never share images or answers.
+# Codex gets no image bytes, only the "[image(s) attached]" note in the prompt.
+async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
+    # A private (0700) directory per call: concurrent turns never share answers.
     call_dir = Path(tempfile.mkdtemp(prefix="codex-", dir=WORKDIR))
     try:
         answer = call_dir / "answer.txt"
         schema = call_dir / "schema.json"
         schema.write_text(json.dumps(STEP_SCHEMA))
-        image_files = [call_dir / f"image-{i}.jpg" for i in range(len(images))]
-        for path, image in zip(image_files, images, strict=True):
-            path.write_bytes(base64.b64decode(image))
         disabled = [arg for feature in CODEX_TOOL_FEATURES for arg in ("--disable", feature)]
-        attached = [arg for path in image_files for arg in ("-i", str(path))]
         # --ignore-user-config keeps the operator's MCP servers, hooks and profiles out.
         await _run(
             [
                 *_jail("codex"), str((BIN / "codex").resolve()), "exec", "--skip-git-repo-check",
                 "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-                *disabled, "-c", 'web_search="disabled"', "-m", model, *attached,
+                *disabled, "-c", 'web_search="disabled"', "-m", CODEX_MODEL,
                 "--output-schema", str(schema), "-C", str(call_dir), "-o", str(answer), "-",
             ],
             prompt,
@@ -323,20 +297,10 @@ async def _codex_exec(model: str, prompt: str, timeout_s: float, images: list[st
         text = answer.read_text()
     finally:
         shutil.rmtree(call_dir, ignore_errors=True)
-    if leaks_codex_login(text):
-        raise ValueError("answer contains Codex login material; discarded")
     return text
 
 
-async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
-    return await _codex_exec(CODEX_MODEL, prompt, timeout_s, images)
-
-
-async def _luna(prompt: str, timeout_s: float, images: list[str]) -> str:
-    return await _codex_exec(LUNA_MODEL, prompt, timeout_s, images)
-
-
-# Cursor gets no image bytes, only the "[image(s) attached]" note in the prompt.
+# Cursor gets no image bytes either.
 async def _cursor(prompt: str, timeout_s: float, images: list[str]) -> str:
     cursor = str((BIN / "cursor-agent").resolve())
     # Cursor's login token lasts an hour; `status` renews it before the real call.
@@ -363,7 +327,6 @@ async def _cursor(prompt: str, timeout_s: float, images: list[str]) -> str:
 RUNNERS: dict[str, Callable[[str, float, list[str]], Awaitable[str]]] = {
     "claude": _claude,
     "codex": _codex,
-    "luna": _luna,
     "cursor": _cursor,
 }
 
