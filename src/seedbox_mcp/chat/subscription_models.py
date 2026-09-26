@@ -24,7 +24,7 @@ import json
 import logging
 import os
 import shutil
-import time
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -273,32 +273,59 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
     return _stream_result(out)
 
 
-async def _codex_exec(model: str, prompt: str, timeout_s: float, images: list[str]) -> str:
-    stamp = f"{os.getpid()}-{time.time_ns()}"
-    answer = WORKDIR / f"codex-{stamp}.txt"
-    schema = WORKDIR / f"codex-{stamp}.schema.json"
-    schema.write_text(json.dumps(STEP_SCHEMA))
-    image_files = [WORKDIR / f"codex-{stamp}-{i}.jpg" for i in range(len(images))]
-    for path, image in zip(image_files, images, strict=True):
-        path.write_bytes(base64.b64decode(image))
-    disabled = [arg for feature in CODEX_TOOL_FEATURES for arg in ("--disable", feature)]
-    attached = [arg for path in image_files for arg in ("-i", str(path))]
+def _codex_secrets() -> list[str]:
     try:
+        auth = json.loads((HOME / ".codex/auth.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    values = [auth.get("OPENAI_API_KEY"), *(auth.get("tokens") or {}).values()]
+    return [v for v in values if isinstance(v, str) and len(v) >= SECRET_WINDOW]
+
+
+# Any run of this many characters from a login token counts as a leak.
+SECRET_WINDOW = 24
+
+
+def leaks_codex_login(answer: str) -> bool:
+    """Codex's login state sits inside its jail. It runs with every tool
+    feature off, so it can't read it; this is the check that doesn't depend
+    on that list staying complete across Codex releases."""
+    return any(
+        secret[i : i + SECRET_WINDOW] in answer
+        for secret in _codex_secrets()
+        for i in range(len(secret) - SECRET_WINDOW + 1)
+    )
+
+
+async def _codex_exec(model: str, prompt: str, timeout_s: float, images: list[str]) -> str:
+    # A private (0700) directory per call: concurrent chats never share images or answers.
+    call_dir = Path(tempfile.mkdtemp(prefix="codex-", dir=WORKDIR))
+    try:
+        answer = call_dir / "answer.txt"
+        schema = call_dir / "schema.json"
+        schema.write_text(json.dumps(STEP_SCHEMA))
+        image_files = [call_dir / f"image-{i}.jpg" for i in range(len(images))]
+        for path, image in zip(image_files, images, strict=True):
+            path.write_bytes(base64.b64decode(image))
+        disabled = [arg for feature in CODEX_TOOL_FEATURES for arg in ("--disable", feature)]
+        attached = [arg for path in image_files for arg in ("-i", str(path))]
         # --ignore-user-config keeps the operator's MCP servers, hooks and profiles out.
         await _run(
             [
                 *_jail("codex"), str((BIN / "codex").resolve()), "exec", "--skip-git-repo-check",
                 "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--ignore-rules",
                 *disabled, "-c", 'web_search="disabled"', "-m", model, *attached,
-                "--output-schema", str(schema), "-C", str(WORKDIR), "-o", str(answer), "-",
+                "--output-schema", str(schema), "-C", str(call_dir), "-o", str(answer), "-",
             ],
             prompt,
             timeout_s,
         )  # fmt: skip
-        return answer.read_text()
+        text = answer.read_text()
     finally:
-        for path in (answer, schema, *image_files):
-            path.unlink(missing_ok=True)
+        shutil.rmtree(call_dir, ignore_errors=True)
+    if leaks_codex_login(text):
+        raise ValueError("answer contains Codex login material; discarded")
+    return text
 
 
 async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
