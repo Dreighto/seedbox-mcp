@@ -18,8 +18,8 @@ Not just an MCP server. Two co-hosted services plus several unattended daemons, 
 - **Two Telegram bots**: operator-only (`@nas_doombot`) and friend-facing
   (`@nasdoom_helperbot`), each hard-allowlisted by `chat_id` (an unlisted chat is silently
   dropped; add the chat_id explicitly, don't assume "the bot replies to anyone who finds it").
-  The friend bot asks Claude on the operator's subscription first and falls back to a
-  local Ollama model; everything else asks Ollama Cloud first and falls back to the
+  The friend bot asks Claude, then GPT-6 Luna (Codex), on the operator's subscriptions and
+  falls back to a local Ollama model; everything else asks Ollama Cloud first and falls back to the
   subscription models on a 429 (`chat/subscription_models.py`).
 - **Unattended daemons**: `monitor.py` (check-cycle triage loop), `digest.py`, plus
   friend-notify/error-watch jobs.

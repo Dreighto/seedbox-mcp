@@ -20,8 +20,8 @@ from seedbox_mcp.telegram import TELEGRAM_API, format_for_telegram, send_message
 
 logger = logging.getLogger("seedbox_mcp.telegram_bot_friend")
 
-# Claude on the operator's subscription answers every message (subscription_first);
-# this local model on room's GPU answers only when Claude fails. Among the
+# Claude, then Luna, both on the operator's subscriptions, answer every message
+# (subscription_first); this local model on room's GPU answers only when both fail. Among the
 # vision-capable local models that fit the card it was the only one that got
 # every test question right, but it misnames scene stills far more often than
 # Claude, so it stays the backup. Local on purpose: Ollama Cloud's weekly limit
@@ -729,7 +729,7 @@ async def _handle_message(
         ollama_url=settings.ollama_url,
         max_tool_rounds=10,
         tool_arg_overrides={"nasdoom_friend_request": {"requested_by": requester_name, "requester_chat_id": chat_id}},
-        fallback_models=subscription_models.CLAUDE_ONLY,
+        fallback_models=subscription_models.FRIEND_BACKENDS,
         subscription_first=True,
     )
     try:

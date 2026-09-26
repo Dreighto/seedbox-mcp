@@ -63,8 +63,8 @@ def test_parse_step_reads_fenced_json_and_rejects_prose() -> None:
         subscription_models.parse_step('{"content": "x", "tool_calls": [{"arguments": {}}]}')
 
 
-def test_friend_chats_get_claude_only() -> None:
-    assert subscription_models.CLAUDE_ONLY == ("claude",)
+def test_friend_chats_never_reach_cursor() -> None:
+    assert subscription_models.FRIEND_BACKENDS == ("claude", "luna")
     assert subscription_models.ALL_BACKENDS[0] == "claude"
 
 
@@ -93,7 +93,8 @@ async def test_ollama_limit_moves_the_turn_to_subscription_models(monkeypatch: p
     assert text == "Plex is up."
     assert mcp.calls == [("media_status", {})]
     assert respx.calls.call_count == 1
-    assert '{"role": "tool", "content": "{\\"ok\\": true' in prompts[1] and "Be brief." in prompts[0]
+    assert '{"role": "tool", "tool_name": "media_status", "content": "{\\"ok\\": true' in prompts[1]
+    assert "Be brief." in prompts[0]
     assert history[-1] == {"role": "assistant", "content": "Plex is up."}
 
 
@@ -324,3 +325,62 @@ def test_claude_stream_result_reads_the_result_event() -> None:
         subscription_models._stream_result('{"type": "result", "is_error": true, "result": "limit"}')
     with pytest.raises(ValueError):
         subscription_models._stream_result('{"type": "system"}')
+
+
+def test_parse_step_takes_arguments_encoded_as_a_string() -> None:
+    message = subscription_models.parse_step(
+        '{"content": "", "tool_calls": [{"name": "jellyseerr_search", "arguments": "{\\"query\\": \\"Dune\\"}"}]}'
+    )
+    assert message["tool_calls"][0]["function"]["arguments"] == {"query": "Dune"}
+    with pytest.raises(ValueError):
+        subscription_models.parse_step('{"content": "", "tool_calls": [{"name": "x", "arguments": "not json"}]}')
+
+
+def test_claude_structured_output_wins_over_result_text() -> None:
+    structured = {"content": "hi", "tool_calls": []}
+    out = json.dumps({"type": "result", "is_error": False, "result": "prose", "structured_output": structured})
+    assert json.loads(subscription_models._stream_result(out)) == structured
+
+
+@pytest.mark.asyncio
+async def test_codex_runs_without_tools_or_user_config_and_gets_images(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(subscription_models, "WORKDIR", tmp_path)
+    monkeypatch.setattr(subscription_models, "_jail", lambda backend: [])
+    seen: dict[str, Any] = {}
+
+    async def fake_run(argv: list[str], stdin: str, timeout_s: float) -> str:
+        seen["argv"] = argv
+        seen["image"] = (tmp_path / argv[argv.index("-i") + 1].split("/")[-1]).read_bytes()
+        seen["schema"] = json.loads((tmp_path / argv[argv.index("--output-schema") + 1].split("/")[-1]).read_text())
+        (tmp_path / argv[argv.index("-o") + 1].split("/")[-1]).write_text('{"content": "ok", "tool_calls": []}')
+        return ""
+
+    monkeypatch.setattr(subscription_models, "_run", fake_run)
+    answer = await subscription_models.RUNNERS["luna"]("prompt", 5, ["QUJD"])
+    argv = seen["argv"]
+    assert answer == '{"content": "ok", "tool_calls": []}'
+    assert argv[argv.index("-m") + 1] == "gpt-6-luna"
+    assert "--ignore-user-config" in argv
+    for feature in ("shell_tool", "unified_exec", "apps", "browser_use", "computer_use"):
+        assert argv[argv.index(feature) - 1] == "--disable"
+    assert seen["image"] == b"ABC" and seen["schema"] == subscription_models.STEP_SCHEMA
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_tool_results_are_labeled_with_their_tool() -> None:
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "a", "arguments": {}}}, {"function": {"name": "b", "arguments": {}}}],
+        },
+        {"role": "tool", "content": "ra"},
+        {"role": "tool", "content": "rb"},
+    ]
+    prompt = subscription_models.render_prompt(messages, [])
+    assert '{"role": "tool", "tool_name": "a", "content": "ra"}' in prompt
+    assert '{"role": "tool", "tool_name": "b", "content": "rb"}' in prompt

@@ -410,8 +410,8 @@ async def run_agent_turn(
     order (see subscription_models.py); tools still run here, through every
     gate above. If all of them fail, the original 429 is raised as before.
     The default suits the operator's own chats and jobs: Codex and Cursor run
-    jailed, but can still read their own login state. Pass
-    subscription_models.CLAUDE_ONLY for chats with people outside the
+    jailed, and Cursor can still read its own login state. Pass
+    subscription_models.FRIEND_BACKENDS for chats with people outside the
     household, and () to turn the fallback off.
 
     `subscription_first`: ask `fallback_models` first and use the Ollama
