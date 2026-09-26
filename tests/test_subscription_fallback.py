@@ -417,3 +417,19 @@ async def test_a_friend_turn_never_reaches_codex_or_cursor(monkeypatch: pytest.M
     )
     assert text == "from local"
     assert called == ["claude"]
+
+
+@pytest.mark.asyncio
+async def test_claude_runs_with_no_tools_and_no_connectors(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[list[str]] = []
+
+    async def fake_run(argv: list[str], stdin: str, timeout_s: float) -> str:
+        seen.append(argv)
+        return '{"type": "result", "is_error": false, "structured_output": {"content": "ok", "tool_calls": []}}'
+
+    monkeypatch.setattr(subscription_models, "_run", fake_run)
+    await subscription_models.RUNNERS["claude"]("prompt", 5, [])
+    argv = seen[0]
+    assert argv[argv.index("--tools") + 1] == ""
+    assert "--strict-mcp-config" in argv and "--mcp-config" not in argv
+    assert argv[argv.index("--setting-sources") + 1] == ""

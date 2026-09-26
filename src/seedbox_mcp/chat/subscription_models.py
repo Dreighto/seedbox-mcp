@@ -258,11 +258,13 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
     ]
     content.append({"type": "text", "text": prompt})
     user_turn = {"type": "user", "message": {"role": "user", "content": content}}
-    # --setting-sources "" keeps the operator's hooks and MCP servers out; no
-    # session is saved, so these calls never show up as his own conversations.
+    # --setting-sources "" keeps the operator's hooks and settings out, and
+    # --strict-mcp-config his claude.ai connectors (Linear, GitHub, the gateway's
+    # file reader), which --tools "" alone still loads. No session is saved, so
+    # these calls never show up as his own conversations.
     out = await _run(
         [
-            str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "",
+            str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "", "--strict-mcp-config",
             "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
             "--json-schema", json.dumps(STEP_SCHEMA),
