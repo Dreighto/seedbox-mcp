@@ -30,3 +30,12 @@ def test_web_sources_are_cut_but_posters_stay() -> None:
     )
     assert strip_web_sources(reply) == f"Not yet, season 3 is set for 2027 per Crunchyroll. [POSTER:{A}]"
     assert strip_web_sources("*Sources:* none\nfine") == "*Sources:* none\nfine"
+
+
+def test_a_sources_line_with_prose_or_posters_after_it_is_kept() -> None:
+    mid = "It's out.\nSource: the studio said so.\nWant it added?"
+    assert strip_web_sources(mid) == mid
+    poster_after = f"It's out.\nSources:\n- [ANN](https://ann.test/x)\n[POSTER:{A}] *Dune* (2021)"
+    assert strip_web_sources(poster_after) == f"It's out.\nSources:\n- ANN\n[POSTER:{A}] *Dune* (2021)"
+    inline = "It's out.\n**Sources:** [ANN](https://ann.test/x), [CR](https://cr.test/y)"
+    assert strip_web_sources(inline) == "It's out."

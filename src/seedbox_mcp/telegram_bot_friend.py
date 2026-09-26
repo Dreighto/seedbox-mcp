@@ -188,12 +188,27 @@ MAX_ALBUM_POSTERS = 4
 # Claude's web search tells it to end with a "Sources:" list of links; in a
 # friend chat that's clutter, and asking the model not to makes it argue with
 # its search tool in the reply. So it writes them and they're cut here.
-_SOURCES_BLOCK_RE = re.compile(r"\n\s*[*_]*sources?[*_]*\s*:.*\Z", re.IGNORECASE | re.DOTALL)
+_SOURCES_HEADING_RE = re.compile(r"^[\s*_#]*sources?[\s*_]*:", re.IGNORECASE)
 _INLINE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
 
 
+def _is_link_line(line: str) -> bool:
+    return "http" in line and "[POSTER:" not in line
+
+
 def strip_web_sources(reply: str) -> str:
-    return _INLINE_LINK_RE.sub(r"\1", _SOURCES_BLOCK_RE.sub("", reply)).strip()
+    """Drops a trailing "Sources:" heading and the link lines under it, and
+    turns inline [text](url) links into their text. Anything that isn't a
+    link line (prose, a [POSTER:] marker) keeps a Sources block in place."""
+    lines = reply.rstrip().split("\n")
+    for end in range(len(lines), 0, -1):
+        line = lines[end - 1]
+        if _SOURCES_HEADING_RE.match(line) and "[POSTER:" not in line:
+            lines = lines[: end - 1]
+            break
+        if line.strip() and not _is_link_line(line):
+            break
+    return _INLINE_LINK_RE.sub(r"\1", "\n".join(lines)).strip()
 
 
 def split_poster_album(reply: str) -> tuple[list[tuple[str, str]], str]:

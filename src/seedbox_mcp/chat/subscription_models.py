@@ -8,8 +8,7 @@ tool call itself, through the allowlist, the preview/confirm gate, the entity-id
 check and the rate limit.
 
 Claude's tool allowlist holds only its own web search. Codex, which has no
-allowlist, runs with every local tool feature disabled and keeps its own web
-search. Both are held to STEP_SCHEMA so a model can't
+allowlist, runs with every tool feature disabled. Both are held to STEP_SCHEMA so a model can't
 answer in loose prose. Cursor keeps its own read tools. Codex and
 Cursor run in a bubblewrap jail whose home holds only their own login state:
 the conversation and tool results are untrusted text and must not be able to
@@ -81,9 +80,8 @@ STEP_SCHEMA: dict[str, Any] = {
     },
 }
 # Codex exec has no tool switch of its own; these features are every way it
-# could read, run or fetch anything local. code_mode_host stays on: Luna reaches
-# every tool through it, its own web search included, and with the shell
-# features off it has no file access (checked live).
+# could read, run or fetch anything. Luna reaches its own web search only
+# through code_mode_host, so it goes without: Claude, ahead of it, has search.
 CODEX_TOOL_FEATURES = (
     "shell_tool",
     "unified_exec",
@@ -98,14 +96,15 @@ CODEX_TOOL_FEATURES = (
     "goals",
     "plugins",
     "image_generation",
+    "code_mode_host",
 )
 
 
-OWN_WEB_SEARCH_NOTE = (
-    "You also have a web search of your own, separate from TOOLS. Use it directly whenever something "
-    "current matters (release dates, what's new, what's streaming); never put it in tool_calls."
+CLAUDE_SYSTEM_PROMPT = (
+    "Answer with exactly the one JSON object the user message asks for. You also have a web search of "
+    "your own, separate from TOOLS. Use it directly whenever something current matters (release dates, "
+    "what's new, what's streaming); never put it in tool_calls."
 )
-CLAUDE_SYSTEM_PROMPT = "Answer with exactly the one JSON object the user message asks for. " + OWN_WEB_SEARCH_NOTE
 
 
 class SubscriptionModelsUnavailable(RuntimeError):
@@ -308,12 +307,12 @@ async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
         # --ignore-user-config keeps the operator's MCP servers, hooks and profiles out.
         await _run(
             [
-                *_jail("codex"), str((BIN / "codex").resolve()), "--search", "exec", "--skip-git-repo-check",
+                *_jail("codex"), str((BIN / "codex").resolve()), "exec", "--skip-git-repo-check",
                 "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-                *disabled, "-m", CODEX_MODEL,
+                *disabled, "-c", 'web_search="disabled"', "-m", CODEX_MODEL,
                 "--output-schema", str(schema), "-C", str(call_dir), "-o", str(answer), "-",
             ],
-            f"{prompt}\n\n{OWN_WEB_SEARCH_NOTE}",
+            prompt,
             timeout_s,
         )  # fmt: skip
         text = answer.read_text()
