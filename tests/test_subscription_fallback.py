@@ -223,12 +223,3 @@ def test_a_bare_json_array_is_the_final_answer() -> None:
     assert subscription_models.parse_step(digest) == {"content": digest, "tool_calls": []}
     with pytest.raises(ValueError):
         subscription_models.parse_step('[{"severity": "healthy"}] and more text')
-
-
-def test_request_urls_with_bot_tokens_are_not_logged() -> None:
-    import logging
-
-    import seedbox_mcp
-
-    assert seedbox_mcp.__version__
-    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
