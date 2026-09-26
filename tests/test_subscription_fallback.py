@@ -51,6 +51,12 @@ def test_parse_step_reads_fenced_json_and_rejects_prose() -> None:
         '```json\n{"content": "", "tool_calls": [{"name": "media_status", "arguments": {}}]}\n```'
     )
     assert message == {"content": "", "tool_calls": [{"function": {"name": "media_status", "arguments": {}}}]}
+    two = (
+        '{"content": "", "tool_calls": [{"name": "media_status", "arguments": {}}]}\n'
+        '{"content": "later", "tool_calls": []}'
+    )
+    assert subscription_models.parse_step(two)["tool_calls"][0]["function"]["name"] == "media_status"
+    assert subscription_models.parse_step('{"content": "done", "tool_calls": []} (that is all)')["content"] == "done"
     with pytest.raises(ValueError):
         subscription_models.parse_step("Everything looks fine.")
     with pytest.raises(ValueError):
