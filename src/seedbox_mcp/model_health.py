@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import defaultdict
 from collections.abc import Iterable
 
@@ -8,6 +9,8 @@ import httpx
 
 from seedbox_mcp.chat.ollama_ai import KEEP_ALIVE
 from seedbox_mcp.model_registry import CloudModel
+
+logger = logging.getLogger("seedbox_mcp.model_health")
 
 # Generous on purpose: a model with no recent traffic (e.g. qwen3.5:397b-cloud,
 # only used for the rare photo-identify path) is essentially always cold
@@ -59,6 +62,11 @@ async def check_model(ollama_url: str, model: str, timeout: float = _PING_TIMEOU
     except httpx.HTTPError as exc:
         return f"network error: {exc}"
     if resp.status_code < 400:
+        return None
+    if resp.status_code == 429:
+        # The account's usage limit, not a retired model: run_agent_turn moves
+        # those turns to the subscription models, so nothing needs escalating.
+        logger.info("model %s: Ollama usage limit (429); bots are on subscription models", model)
         return None
     try:
         detail = resp.json().get("error") or resp.text

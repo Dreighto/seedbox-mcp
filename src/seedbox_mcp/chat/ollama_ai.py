@@ -11,6 +11,7 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 
 from seedbox_mcp.action_audit import MAX_ACTIONS_PER_HOUR, rate_limit_exceeded, record_action
+from seedbox_mcp.chat import subscription_models
 
 logger = logging.getLogger("seedbox_mcp.chat.ollama_ai")
 
@@ -333,6 +334,7 @@ async def run_agent_turn(
     timeout_s: float = 120.0,
     max_tool_rounds: int = MAX_TOOL_ROUNDS,
     tool_arg_overrides: dict[str, dict[str, Any]] | None = None,
+    fallback_models: tuple[str, ...] = subscription_models.ALL_BACKENDS,
 ) -> tuple[str, list[dict[str, Any]], dict[str, Any] | None, dict[str, list[int]]]:
     """Runs `task` through `model` (an Ollama-served model, typically a
     `:cloud`-tagged one) with tool-calling against tools the connected MCP
@@ -396,7 +398,16 @@ async def run_agent_turn(
     that needs a single turn to check many independent tools (e.g. a
     multi-signal monitor cycle) should pass a higher value — each hallucinated
     kwarg that gets retried also consumes a round, so "number of tools to
-    check" isn't the only thing eating the budget."""
+    check" isn't the only thing eating the budget.
+
+    `fallback_models`: when Ollama answers 429 (the account's usage limit),
+    the rest of this turn's model steps go to these subscription backends in
+    order (see subscription_models.py); tools still run here, through every
+    gate above. If all of them fail, the original 429 is raised as before.
+    The default suits the operator's own chats and jobs: Codex and Cursor run
+    jailed, but can still read their own login state. Pass
+    subscription_models.CLAUDE_ONLY for chats with people outside the
+    household, and () to turn the fallback off."""
     action_tools = action_tools if action_tools is not None else ACTION_TOOLS
     known_entity_ids = {k: list(v) for k, v in (known_entity_ids or {}).items()}
     escalation_tools = escalation_tools if escalation_tools is not None else ESCALATION_TOOLS
@@ -413,21 +424,40 @@ async def run_agent_turn(
         {"role": "user", "content": task},
     ]
 
+    refused: httpx.Response | None = None
     async with httpx.AsyncClient(base_url=ollama_url, timeout=timeout_s) as http:
         for _round in range(max_tool_rounds):
-            resp = await http.post(
-                "/api/chat",
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "tools": tools,
-                    "stream": False,
-                    "keep_alive": KEEP_ALIVE,
-                },
-            )
-            resp.raise_for_status()
-            body = resp.json()
-            message = body.get("message", {})
+            message: dict[str, Any] = {}
+            if refused is None:
+                resp = await http.post(
+                    "/api/chat",
+                    json={
+                        "model": model,
+                        "messages": messages,
+                        "tools": tools,
+                        "stream": False,
+                        "keep_alive": KEEP_ALIVE,
+                    },
+                )
+                if resp.status_code == 429 and fallback_models:
+                    logger.warning(
+                        "ollama_ai: Ollama refused %s (429: %s); this turn uses %s",
+                        model,
+                        resp.text[:160],
+                        ", ".join(fallback_models),
+                    )
+                    refused = resp
+                else:
+                    resp.raise_for_status()
+                    message = resp.json().get("message", {})
+            if refused is not None:
+                try:
+                    message, backend = await subscription_models.step(messages, tools, fallback_models, timeout_s)
+                except subscription_models.SubscriptionModelsUnavailable as exc:
+                    logger.error("ollama_ai: every subscription model failed: %s", exc)
+                    refused.raise_for_status()
+                    raise
+                logger.info("ollama_ai: step answered by %s", backend)
             content = message.get("content", "") or ""
 
             tool_calls = message.get("tool_calls")
