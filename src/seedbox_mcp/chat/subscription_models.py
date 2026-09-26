@@ -7,11 +7,13 @@ tool call, answered as one JSON object; run_agent_turn still executes every MCP
 tool call itself, through the allowlist, the preview/confirm gate, the entity-id
 check and the rate limit.
 
-Claude runs with no tools at all. Codex and Cursor keep their own read tools, so
-they run in a bubblewrap jail whose home holds only their own login state: the
-conversation and tool results are untrusted text and must not be able to steer
-them into reading anything else on this machine. The real binaries are called,
-never the agent-defaults wrappers on an interactive PATH, which add
+Claude runs with an empty tool allowlist. Codex runs with every tool feature
+disabled (it has no allowlist). Both are held to STEP_SCHEMA so a model can't
+answer in loose prose. Cursor keeps its own read tools. Codex and
+Cursor run in a bubblewrap jail whose home holds only their own login state:
+the conversation and tool results are untrusted text and must not be able to
+steer them into reading anything else on this machine. The real binaries are
+called, never the agent-defaults wrappers on an interactive PATH, which add
 permission-skipping flags.
 """
 
@@ -22,7 +24,7 @@ import json
 import logging
 import os
 import shutil
-import time
+import tempfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -33,11 +35,13 @@ HOME = Path.home()
 BIN = HOME / ".local/bin"
 WORKDIR = HOME / ".local/state/seedbox-mcp/model-fallback"
 CLAUDE_MODEL = "sonnet"
+CODEX_MODEL = "gpt-6-sol"
 CURSOR_MODEL = "grok-4.7-medium"
 
 ALL_BACKENDS: tuple[str, ...] = ("claude", "codex", "cursor")
-# Codex and Cursor can still read their own login state inside the jail, so a
-# chat with people outside the household gets Claude only.
+# Codex and Cursor keep their login state inside the jail, and neither CLI can
+# be given an empty tool allowlist the way Claude can, so a chat with people
+# outside the household gets Claude only.
 CLAUDE_ONLY: tuple[str, ...] = ("claude",)
 
 # Paths under HOME each jailed backend needs: its state (read-write) and its program (read-only).
@@ -47,12 +51,45 @@ _JAIL_PROGRAM = {"codex": (), "cursor": (".local/share/cursor-agent",)}
 INSTRUCTIONS = """You are the model inside a tool-using assistant. Reply to the conversation \
 below with ONE JSON object and nothing else, shaped:
 {"content": "<text for the user; empty when you are calling tools>", \
-"tool_calls": [{"name": "<tool name>", "arguments": {<arguments>}}]}
+"tool_calls": [{"name": "<tool name>", "arguments": "<the arguments object, JSON-encoded as a string>"}]}
 Use "tool_calls": [] when you give your final answer. If the system prompt asks for the final \
 answer in a format of its own (a JSON array, say), put that whole text as a string in "content". \
 Call only tools listed under TOOLS, with arguments that match their schema. You cannot run \
 anything yourself: the tools are run for you and their results come back as "tool" messages, \
-in the order you called them."""
+in the order you called them, each naming its tool in "tool_name". A result already in the \
+conversation is final: use it, never repeat the same call."""
+
+
+# Tool arguments travel as a JSON string because OpenAI's strict schemas can't
+# describe an object with free-form keys.
+STEP_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["content", "tool_calls"],
+    "properties": {
+        "content": {"type": "string"},
+        "tool_calls": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["name", "arguments"],
+                "properties": {"name": {"type": "string"}, "arguments": {"type": "string"}},
+            },
+        },
+    },
+}
+# Codex exec has no tool switch of its own; these features are every way it
+# could read, run or fetch anything.
+CODEX_TOOL_FEATURES = (
+    "shell_tool",
+    "unified_exec",
+    "apps",
+    "browser_use",
+    "computer_use",
+    "skill_search",
+    "tool_suggest",
+)
 
 
 class SubscriptionModelsUnavailable(RuntimeError):
@@ -61,7 +98,7 @@ class SubscriptionModelsUnavailable(RuntimeError):
 
 def render_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
     system = messages[0]["content"] if messages and messages[0].get("role") == "system" else ""
-    rest = [_without_images(m) for m in (messages[1:] if system else messages)]
+    rest = _name_tool_results([_without_images(m) for m in (messages[1:] if system else messages)])
     return "\n\n".join(
         [
             INSTRUCTIONS,
@@ -79,6 +116,22 @@ def _without_images(message: dict[str, Any]) -> dict[str, Any]:
     stripped = {k: v for k, v in message.items() if k != "images"}
     stripped["content"] = f"{stripped.get('content', '')}\n[{count} image(s) attached to this message]"
     return stripped
+
+
+def _name_tool_results(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Labels each tool result with the tool it answers, by position: every call
+    gets exactly one result message, in order. Unlabeled, GPT models don't
+    match results to their calls and repeat the same call until the round
+    budget runs out."""
+    named: list[dict[str, Any]] = []
+    pending: list[str] = []
+    for message in messages:
+        if message.get("role") == "assistant":
+            pending = [(c.get("function") or {}).get("name", "") for c in message.get("tool_calls") or []]
+        elif message.get("role") == "tool" and pending:
+            message = {**message, "tool_name": pending.pop(0)}
+        named.append(message)
+    return named
 
 
 def conversation_images(messages: list[dict[str, Any]]) -> list[str]:
@@ -105,6 +158,11 @@ def parse_step(text: str) -> dict[str, Any]:
         if not isinstance(call, dict) or not isinstance(call.get("name"), str):
             raise ValueError(f"malformed tool call: {call!r}")
         arguments = call.get("arguments") or {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"tool call arguments are not JSON: {call!r}") from exc
         if not isinstance(arguments, dict):
             raise ValueError(f"tool call arguments are not an object: {call!r}")
         tool_calls.append({"function": {"name": call["name"], "arguments": arguments}})
@@ -115,8 +173,12 @@ def _stream_result(out: str) -> str:
     for line in reversed(out.splitlines()):
         event = json.loads(line) if line.strip().startswith("{") else {}
         if event.get("type") == "result":
-            if event.get("is_error") or not isinstance(event.get("result"), str):
+            if event.get("is_error"):
                 raise ValueError(f"CLI reported an error: {line[:160]!r}")
+            if isinstance(event.get("structured_output"), dict):
+                return json.dumps(event["structured_output"])
+            if not isinstance(event.get("result"), str):
+                raise ValueError(f"no result text in CLI output: {line[:160]!r}")
             return event["result"]
     raise ValueError(f"no result event in CLI output: {out[-160:]!r}")
 
@@ -203,6 +265,7 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
             str((BIN / "claude").resolve()), "-p", "--model", CLAUDE_MODEL, "--tools", "",
             "--setting-sources", "", "--no-session-persistence", "--disable-slash-commands",
             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
+            "--json-schema", json.dumps(STEP_SCHEMA),
             "--system-prompt", "Answer with exactly the one JSON object the user message asks for.",
         ],
         json.dumps(user_turn) + "\n",
@@ -211,23 +274,33 @@ async def _claude(prompt: str, timeout_s: float, images: list[str]) -> str:
     return _stream_result(out)
 
 
-# Codex and Cursor get no image bytes, only the "[image(s) attached]" note in the prompt.
+# Codex gets no image bytes, only the "[image(s) attached]" note in the prompt.
 async def _codex(prompt: str, timeout_s: float, images: list[str]) -> str:
-    answer = WORKDIR / f"codex-{os.getpid()}-{time.time_ns()}.txt"
+    # A private (0700) directory per call: concurrent turns never share answers.
+    call_dir = Path(tempfile.mkdtemp(prefix="codex-", dir=WORKDIR))
     try:
+        answer = call_dir / "answer.txt"
+        schema = call_dir / "schema.json"
+        schema.write_text(json.dumps(STEP_SCHEMA))
+        disabled = [arg for feature in CODEX_TOOL_FEATURES for arg in ("--disable", feature)]
+        # --ignore-user-config keeps the operator's MCP servers, hooks and profiles out.
         await _run(
             [
                 *_jail("codex"), str((BIN / "codex").resolve()), "exec", "--skip-git-repo-check",
-                "--sandbox", "read-only", "--ephemeral", "-C", str(WORKDIR), "-o", str(answer), "-",
+                "--sandbox", "read-only", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+                *disabled, "-c", 'web_search="disabled"', "-m", CODEX_MODEL,
+                "--output-schema", str(schema), "-C", str(call_dir), "-o", str(answer), "-",
             ],
             prompt,
             timeout_s,
         )  # fmt: skip
-        return answer.read_text()
+        text = answer.read_text()
     finally:
-        answer.unlink(missing_ok=True)
+        shutil.rmtree(call_dir, ignore_errors=True)
+    return text
 
 
+# Cursor gets no image bytes either.
 async def _cursor(prompt: str, timeout_s: float, images: list[str]) -> str:
     cursor = str((BIN / "cursor-agent").resolve())
     # Cursor's login token lasts an hour; `status` renews it before the real call.

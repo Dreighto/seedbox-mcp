@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -324,3 +325,95 @@ def test_claude_stream_result_reads_the_result_event() -> None:
         subscription_models._stream_result('{"type": "result", "is_error": true, "result": "limit"}')
     with pytest.raises(ValueError):
         subscription_models._stream_result('{"type": "system"}')
+
+
+def test_parse_step_takes_arguments_encoded_as_a_string() -> None:
+    message = subscription_models.parse_step(
+        '{"content": "", "tool_calls": [{"name": "jellyseerr_search", "arguments": "{\\"query\\": \\"Dune\\"}"}]}'
+    )
+    assert message["tool_calls"][0]["function"]["arguments"] == {"query": "Dune"}
+    with pytest.raises(ValueError):
+        subscription_models.parse_step('{"content": "", "tool_calls": [{"name": "x", "arguments": "not json"}]}')
+
+
+def test_claude_structured_output_wins_over_result_text() -> None:
+    structured = {"content": "hi", "tool_calls": []}
+    out = json.dumps({"type": "result", "is_error": False, "result": "prose", "structured_output": structured})
+    assert json.loads(subscription_models._stream_result(out)) == structured
+
+
+@pytest.mark.asyncio
+async def test_codex_runs_without_tools_or_user_config(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subscription_models, "WORKDIR", tmp_path)
+    monkeypatch.setattr(subscription_models, "_jail", lambda backend: [])
+    seen: dict[str, Any] = {}
+
+    async def fake_run(argv: list[str], stdin: str, timeout_s: float) -> str:
+        seen["argv"] = argv
+        seen["schema"] = json.loads(Path(argv[argv.index("--output-schema") + 1]).read_text())
+        Path(argv[argv.index("-o") + 1]).write_text('{"content": "ok", "tool_calls": []}')
+        return ""
+
+    monkeypatch.setattr(subscription_models, "_run", fake_run)
+    answer = await subscription_models.RUNNERS["codex"]("prompt", 5, ["QUJD"])
+    argv = seen["argv"]
+    assert answer == '{"content": "ok", "tool_calls": []}'
+    assert argv[argv.index("-m") + 1] == subscription_models.CODEX_MODEL
+    assert {"--ignore-user-config", "--ignore-rules", "--ephemeral"} <= set(argv)
+    assert "-i" not in argv
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    assert argv[argv.index("-c") + 1] == 'web_search="disabled"'
+    for feature in subscription_models.CODEX_TOOL_FEATURES:
+        assert argv[argv.index(feature) - 1] == "--disable"
+    assert seen["schema"] == subscription_models.STEP_SCHEMA
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_tool_results_are_labeled_with_their_tool() -> None:
+    messages = [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"function": {"name": "a", "arguments": {}}}, {"function": {"name": "b", "arguments": {}}}],
+        },
+        {"role": "tool", "content": "ra"},
+        {"role": "tool", "content": "rb"},
+    ]
+    prompt = subscription_models.render_prompt(messages, [])
+    assert '{"role": "tool", "content": "ra", "tool_name": "a"}' in prompt
+    assert '{"role": "tool", "content": "rb", "tool_name": "b"}' in prompt
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_a_friend_turn_never_reaches_codex_or_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    respx.post(f"{OLLAMA}/api/chat").mock(
+        return_value=httpx.Response(200, json={"message": {"role": "assistant", "content": "from local"}})
+    )
+    called: list[str] = []
+
+    def runner(name: str, answer: str | None) -> Any:
+        async def run(prompt: str, timeout_s: float, images: list[str]) -> str:
+            called.append(name)
+            if answer is None:
+                raise RuntimeError(f"{name} down")
+            return answer
+
+        return run
+
+    for name in ("codex", "cursor"):
+        monkeypatch.setitem(subscription_models.RUNNERS, name, runner(name, '{"content": "wrong", "tool_calls": []}'))
+    monkeypatch.setitem(subscription_models.RUNNERS, "claude", runner("claude", None))
+    text, _, _, _ = await ollama_ai.run_agent_turn(
+        "hi",
+        system_prompt="s",
+        mcp_client=FakeMcp(),
+        model="local:12b",
+        ollama_url=OLLAMA,
+        fallback_models=subscription_models.CLAUDE_ONLY,
+        subscription_first=True,
+    )
+    assert text == "from local"
+    assert called == ["claude"]

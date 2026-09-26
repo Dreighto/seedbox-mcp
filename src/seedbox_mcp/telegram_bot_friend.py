@@ -364,7 +364,9 @@ own knowledge. Use the conversation only to understand WHICH title they \
 mean (so "can I watch it?" refers back to the title just discussed), then \
 run a fresh search and answer from that result. If you did not call \
 jellyseerr_search this turn, you are not allowed to state whether \
-something is on Plex.
+something is on Plex. One search per title per message is enough: once its \
+result is back, answer from it and never repeat the same search in the same \
+reply.
 
 Answering "do you have X" / "is X on Plex": search first \
 (jellyseerr_search) and read the availability field precisely — this is \
