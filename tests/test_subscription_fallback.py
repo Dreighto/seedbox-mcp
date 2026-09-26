@@ -216,3 +216,19 @@ async def test_non_object_cli_output_moves_on_to_the_next_backend(monkeypatch: p
     monkeypatch.setitem(subscription_models.RUNNERS, "codex", scripted(['{"content": "ok", "tool_calls": []}'], []))
     message, backend = await subscription_models.step([{"role": "user", "content": "hi"}], [], ("claude", "codex"), 5)
     assert (message["content"], backend) == ("ok", "codex")
+
+
+def test_a_bare_json_array_is_the_final_answer() -> None:
+    digest = '[\n{"severity": "healthy", "title": "Plex"}\n]'
+    assert subscription_models.parse_step(digest) == {"content": digest, "tool_calls": []}
+    with pytest.raises(ValueError):
+        subscription_models.parse_step('[{"severity": "healthy"}] and more text')
+
+
+def test_request_urls_with_bot_tokens_are_not_logged() -> None:
+    import logging
+
+    import seedbox_mcp
+
+    assert seedbox_mcp.__version__
+    assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING

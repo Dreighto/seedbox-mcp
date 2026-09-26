@@ -48,9 +48,11 @@ INSTRUCTIONS = """You are the model inside a tool-using assistant. Reply to the 
 below with ONE JSON object and nothing else, shaped:
 {"content": "<text for the user; empty when you are calling tools>", \
 "tool_calls": [{"name": "<tool name>", "arguments": {<arguments>}}]}
-Use "tool_calls": [] when you give your final answer. Call only tools listed under TOOLS, \
-with arguments that match their schema. You cannot run anything yourself: the tools are run \
-for you and their results come back as "tool" messages, in the order you called them."""
+Use "tool_calls": [] when you give your final answer. If the system prompt asks for the final \
+answer in a format of its own (a JSON array, say), put that whole text as a string in "content". \
+Call only tools listed under TOOLS, with arguments that match their schema. You cannot run \
+anything yourself: the tools are run for you and their results come back as "tool" messages, \
+in the order you called them."""
 
 
 class SubscriptionModelsUnavailable(RuntimeError):
@@ -72,6 +74,10 @@ def render_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -
 
 def parse_step(text: str) -> dict[str, Any]:
     """The Ollama-shaped assistant message in a backend's answer; ValueError when there is none."""
+    if text.lstrip().startswith("["):
+        # A bare JSON array is the caller's own final-answer format (monitor, digest), sent unwrapped.
+        json.loads(text)
+        return {"content": text.strip(), "tool_calls": []}
     start = text.find("{")
     if start < 0:
         raise ValueError(f"no JSON object in answer: {text[:160]!r}")
