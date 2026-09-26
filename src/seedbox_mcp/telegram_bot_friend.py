@@ -40,11 +40,10 @@ POLL_TIMEOUT_S = 30
 # 720p/1080p quality profile) and a specific-release grab used ONLY after a
 # requester knowingly accepts a below-standard quality — both acquire media
 # but neither can touch the OS, services, config, storage, other users'
-# data, or the file-share portal.
+# data, or the file-share portal. Web lookups (release dates, what's new) use
+# Claude's own web search, not a tool here.
 FRIEND_READ_ONLY_TOOLS: set[str] = {
     "jellyseerr_search",
-    "web_search",
-    "content_release_status",
     "nasdoom_releases",
 }
 FRIEND_ACTION_TOOLS: set[str] = {"nasdoom_friend_request", "nasdoom_grab_release"}
@@ -67,8 +66,6 @@ FRIEND_CONFIRM_TOOLS: set[str] = {"nasdoom_grab_release"}
 _FRIEND_SAFE_ALLOWLIST: frozenset[str] = frozenset(
     {
         "jellyseerr_search",
-        "web_search",
-        "content_release_status",
         "nasdoom_releases",
         "nasdoom_friend_request",
         "nasdoom_grab_release",
@@ -188,6 +185,16 @@ _ANY_POSTER_RE = re.compile(r"\[POSTER:[^\]]*\]", re.IGNORECASE)
 
 MAX_ALBUM_POSTERS = 4
 
+# Claude's web search tells it to end with a "Sources:" list of links; in a
+# friend chat that's clutter, and asking the model not to makes it argue with
+# its search tool in the reply. So it writes them and they're cut here.
+_SOURCES_BLOCK_RE = re.compile(r"\n\s*[*_]*sources?[*_]*\s*:.*\Z", re.IGNORECASE | re.DOTALL)
+_INLINE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)\s]+)\)")
+
+
+def strip_web_sources(reply: str) -> str:
+    return _INLINE_LINK_RE.sub(r"\1", _SOURCES_BLOCK_RE.sub("", reply)).strip()
+
 
 def split_poster_album(reply: str) -> tuple[list[tuple[str, str]], str]:
     """(poster url, caption) per distinct poster, and the text left over. A
@@ -234,6 +241,7 @@ async def _send_reply(token: str, chat_id: int, reply: str) -> None:
     One marker sends that poster with the whole reply as its caption. Invalid
     markers are stripped so they never show up literally, and any photo
     failure degrades to text."""
+    reply = strip_web_sources(reply)
     album, rest = split_poster_album(reply)
     text = _ANY_POSTER_RE.sub("", reply).strip()
     if len(album) > 1:
@@ -341,9 +349,8 @@ the owner to approve; it does not download until they say yes.
 3. Check what quality is actually available for a title right now \
 (nasdoom_releases) and, only with the person's explicit okay, grab a \
 specific copy (nasdoom_grab_release).
-4. Look up whether something is out yet or streaming yet \
-(content_release_status — a web-grounded lookup that gives release dates \
-and streaming status directly).
+4. Look up whether something is out yet or streaming yet, with your own \
+web search.
 If someone asks for anything else — account help, playback problems, \
 server settings, "what's playing right now" — say plainly that's not \
 something you can do here, and that they should message the owner directly.
@@ -394,11 +401,14 @@ year, or whether something exists; if the search is empty or unclear, ask \
 them to clarify rather than making something up.
 
 "Is the new season / new batch of <anime or show> out yet?" or "is <new \
-movie> out yet?": use content_release_status to check whether it has \
+movie> out yet?": use your own web search to check whether it has \
 actually released or started streaming, and answer honestly, including \
 "not out yet" when that's the truth. Don't promise something that hasn't \
-been released. (web_search is still available for the rare general \
-question, but for release/streaming timing use content_release_status.)
+been released.
+
+Your web search is your own, not one of the listed tools: use it directly \
+whenever something current matters. If you have no web search, say you \
+can't check that right now instead of guessing.
 
 Requesting (the normal path): get the title's id from jellyseerr_search \
 first, always — never state or guess an id from memory; the system rejects \
@@ -461,8 +471,8 @@ who outlives her party", "the show with the chemistry teacher", "something \
 with that actor from The Bear"), or send a photo of a poster, a cover, a \
 screenshot of a scene or an actor. Work it out, don't make them name it:
 - Think about what fits the plot, scene, characters, actors or artwork, \
-using what you know. If you're not sure, or it sounds recent, use \
-web_search with the description to find candidates.
+using what you know. If you're not sure, or it sounds recent, search the \
+web with the description to find candidates.
 - Then jellyseerr_search each candidate (up to 4) to get its real poster \
 and whether it's on Plex.
 - If one clearly fits, show it with its poster and ask "is this the one?". \
@@ -479,7 +489,7 @@ a second" and stop, that sends them nothing and you cannot follow up later, \
 so it just leaves them hanging. And you MUST use your tools here, your own \
 memory is NOT good enough for this: your training is out of date so you do \
 not actually know what is new, and you have NO way to know what is on this \
-Plex server without checking it. So: STEP 1, call web_search to get current \
+Plex server without checking it. So: STEP 1, search the web for current \
 titles that fit what they asked (for example "best new horror movies 2025"). \
 STEP 2, call jellyseerr_search for EACH title you are about to mention, to \
 find out if it is really on Plex. Only after those calls, write your answer: \
@@ -487,7 +497,7 @@ find out if it is really on Plex. Only after those calls, write your answer: \
 those now) each with a one-line reason, and for a great pick that is not on \
 Plex, offer to add it. Show each pick with its poster (the two-to-four \
 titles rule above). Keep it short and skimmable, then ask if they want one added or want other options. Listing \
-"new" titles from memory instead of web_search gives them stale, wrong info, \
+"new" titles from memory instead of searching gives them stale, wrong info, \
 and saying a title is or is not on Plex without a jellyseerr_search this turn \
 is a false claim, do not do either. This "do it now with real tools, don't \
 just promise or guess from memory" rule applies to everything.
