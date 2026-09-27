@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -23,14 +24,20 @@ GIVE_UP_AFTER_S = 6 * 3600
 def load() -> dict[str, dict[str, Any]]:
     try:
         loaded = json.loads(ESCALATIONS_PATH.read_text())
+    except FileNotFoundError:
+        return {}
     except (OSError, json.JSONDecodeError):
+        logger.exception("unreadable escalations file %s; treating it as empty", ESCALATIONS_PATH)
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
 
 def _save(entries: dict[str, dict[str, Any]]) -> None:
+    # The bot and the monitor both write this file: replace it whole, never half-written.
+    tmp = ESCALATIONS_PATH.with_suffix(f".{os.getpid()}.tmp")
     try:
-        ESCALATIONS_PATH.write_text(json.dumps(entries))
+        tmp.write_text(json.dumps(entries))
+        os.replace(tmp, ESCALATIONS_PATH)
     except OSError:
         logger.exception("failed to persist escalations to %s", ESCALATIONS_PATH)
 

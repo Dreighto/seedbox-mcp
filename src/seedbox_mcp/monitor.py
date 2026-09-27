@@ -784,7 +784,7 @@ def _send_to_operator(settings: MonitorSettings, html_text: str, markup: dict | 
         )
     else:
         logger.warning(
-            "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
+            "Telegram not configured: set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
         )
 
 
