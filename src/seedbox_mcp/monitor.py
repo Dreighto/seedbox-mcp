@@ -21,6 +21,7 @@ from seedbox_mcp.model_health import check_models
 from seedbox_mcp.model_registry import ALL_MODELS
 from seedbox_mcp.model_registry import DEFAULT_MONITOR_MODEL as _DEFAULT_MONITOR_MODEL_ENTRY
 from seedbox_mcp.quality_guard import run_quality_guard
+from seedbox_mcp.runtime import build_services
 from seedbox_mcp.telegram import send_message_html
 from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
@@ -405,6 +406,42 @@ async def _deterministic_model_liveness_check(ollama_url: str) -> str | None:
     return "\n".join(f"{p} — not auto-fixed, needs escalation." for p in problems)
 
 
+# Jellyseerr's Plex scan runs every few minutes; hours without one means it can't
+# read Plex (on 2026-09-27 a library removed from Plex made every scan fail for two
+# days) and the friend bot's "is it on Plex" answers go stale.
+JELLYSEERR_SCAN_STALE_S = 2 * 3600
+
+
+def jellyseerr_scan_note(plex_settings: dict[str, Any], now_ts: float) -> str | None:
+    """Pure. A report line when Jellyseerr's enabled Plex libraries haven't been scanned lately."""
+    libraries = [lib for lib in plex_settings.get("libraries") or [] if lib.get("enabled")]
+    if not libraries:
+        return (
+            "Jellyseerr has no Plex libraries switched on, so the friend bot can't tell what's on Plex. "
+            "Worth a look."
+        )
+    stale = [
+        str(lib.get("name"))
+        for lib in libraries
+        if now_ts * 1000 - float(lib.get("lastScan") or 0) > JELLYSEERR_SCAN_STALE_S * 1000
+    ]
+    if not stale:
+        return None
+    return (
+        f"Jellyseerr hasn't finished a Plex scan in over 2 hours ({', '.join(stale)}). The friend bot's "
+        "answers about what's on Plex come from Jellyseerr, so they may be wrong. A library that no "
+        "longer exists in Plex makes every scan fail: check Jellyseerr's Plex library settings. Worth a look."
+    )
+
+
+async def _deterministic_jellyseerr_scan_check(settings: MonitorSettings) -> str | None:
+    services = build_services(settings)
+    if not services.jellyseerr:
+        return None
+    plex_settings = await services.jellyseerr.get("/api/v1/settings/plex")
+    return jellyseerr_scan_note(plex_settings if isinstance(plex_settings, dict) else {}, time.time())
+
+
 async def _deterministic_storage_check(mcp_client: Client[Any]) -> str | None:
     """Flags the media pool only on absolute free-space headroom (see
     MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES), deterministic in code instead of
@@ -595,6 +632,7 @@ async def run_monitor_cycle(
     quality_guard_note = None
     model_liveness_note = None
     storage_note = None
+    jellyseerr_note = None
     if not read_only:
         # Cheap (a handful of trivial pings), so it runs every scheduled
         # cycle rather than being throttled — see
@@ -608,6 +646,11 @@ async def run_monitor_cycle(
             storage_note = await _deterministic_storage_check(mcp_client)
         except Exception:
             logger.exception("storage check failed (non-fatal)")
+
+        try:
+            jellyseerr_note = await _deterministic_jellyseerr_scan_check(settings)
+        except Exception:
+            logger.exception("jellyseerr scan check failed (non-fatal)")
 
         queue_fix_note = await _deterministic_queue_resume(mcp_client)
         # Strike-based stalled-download fixer — deterministic, same "keep it
@@ -673,7 +716,13 @@ async def run_monitor_cycle(
     llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
     return (
         _notes_to_findings(
-            queue_fix_note, strike_note, quality_guard_note, recovery_note, model_liveness_note, storage_note
+            queue_fix_note,
+            strike_note,
+            quality_guard_note,
+            recovery_note,
+            model_liveness_note,
+            storage_note,
+            jellyseerr_note,
         )
         + llm_findings
     )
