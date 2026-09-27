@@ -84,6 +84,11 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
     # a permissions/path problem). A real import issue shows up either as an
     # import-family download state or an import/permission message.
     is_import_state = state in ("importpending", "importblocked", "importfailed", "failedpending")
+    # Sonarr holds a just-aired anime episode until TVDB publishes its absolute
+    # number, then imports it by itself; the wording changes once the grace day
+    # passes, so a hold that outlives it is still reported.
+    if "absolute episode number" in msg and "recently aired" in msg:
+        return None, ""
     if is_import_state or any(m in msg for m in _IMPORT_MARKERS):
         return "import_issue", f"stuck importing ({state or status or 'import error'})"
 

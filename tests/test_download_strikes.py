@@ -201,3 +201,22 @@ async def test_end_to_end_never_acts_on_import_issue(monkeypatch: pytest.MonkeyP
         note = await run_download_strike_check(settings=None, now_ts=float(cycle))
         assert fake.deletes == [], "import issues must never trigger a removal"
         assert note is not None and "import" in note.lower()
+
+
+def test_a_just_aired_episode_waiting_on_its_absolute_number_is_healthy() -> None:
+    waiting = {
+        "trackedDownloadState": "importBlocked",
+        "trackedDownloadStatus": "warning",
+        "status": "completed",
+        "statusMessages": [
+            {
+                "title": "One.Piece.1999.S23E25.1080p.CR.WEB-DL",
+                "messages": ["Episode does not have an absolute episode number and recently aired"],
+            }
+        ],
+    }
+    assert classify_queue_item(waiting) == (None, "")
+    outlived = dict(
+        waiting, statusMessages=[{"title": "x", "messages": ["Episode does not have an absolute episode number"]}]
+    )
+    assert classify_queue_item(outlived)[0] == "import_issue"
