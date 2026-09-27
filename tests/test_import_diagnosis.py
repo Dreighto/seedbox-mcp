@@ -144,3 +144,33 @@ async def test_custom_format_upgrade_rejection_is_not_an_upgrade(
     result = await _diagnose_item(services, "sonarr", item)
     assert result["diagnosis"] == "not_an_upgrade"
     assert "custom format upgrade" in (result["arr_reason"] or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_missing_absolute_number_is_awaiting_metadata(
+    monkeypatch: pytest.MonkeyPatch, services: Services
+) -> None:
+    """Sonarr holds a just-aired anime episode while TVDB lacks its absolute
+    number. That is a metadata wait, not a filesystem problem, so no probe
+    runs and nothing is flagged as permissions.
+    """
+
+    async def boom(_services: object, command: str, timeout: float = 30.0) -> tuple[int, str, str]:
+        raise AssertionError(f"filesystem probe should not run: {command}")
+
+    monkeypatch.setattr(import_diagnosis, "_run_on_nas", boom)
+
+    item = {
+        "outputPath": "/downloads/complete/One.Piece.1999.S23E25.1080p.CR.WEB-DL.AAC2.0.H.264-AnoZu/",
+        "series": {"title": "One Piece"},
+        "errorMessage": "",
+        "statusMessages": [
+            {
+                "title": "One.Piece.1999.S23E25.1080p.CR.WEB-DL.AAC2.0.H.264-AnoZu",
+                "messages": ["Episode does not have an absolute episode number and recently aired"],
+            }
+        ],
+    }
+    result = await _diagnose_item(services, "sonarr", item)
+    assert result["diagnosis"] == "awaiting_metadata"
+    assert "remediation" not in result

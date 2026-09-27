@@ -115,6 +115,23 @@ async def _diagnose_item(services: Services, source: str, item: dict[str, Any]) 
         )
         result["remediation_note"] = "Safe to remove+blocklist and re-search for a real release."
         return result
+    # Sonarr holds an anime import for a day after air when TVDB has not yet
+    # published the episode's absolute number, so the file is never named
+    # with a guessed one. It imports on its own once the number lands (series
+    # refresh) or the day passes.
+    if "absolute episode number" in low:
+        result["diagnosis"] = "awaiting_metadata"
+        result["explanation"] = (
+            f'{source} reports: "{reason}". The download and the library are fine; {source} is '
+            "deliberately waiting because TVDB has not published this episode's absolute number yet "
+            "and the episode aired within the last day. It imports by itself when the number appears "
+            "or the day passes. Benign. Do not treat this as permissions/path, and do not escalate."
+        )
+        result["remediation_note"] = (
+            "Nothing to do. If the operator wants it now, a manual import in the arr UI works, but the "
+            "file is named without its absolute number until a later rename."
+        )
+        return result
     # Sonarr's live wording is "Not a Custom Format upgrade for existing
     # episode file(s)", which does not contain the substring "not an upgrade".
     not_upgrade_markers = (

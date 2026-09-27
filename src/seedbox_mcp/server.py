@@ -1028,9 +1028,11 @@ def create_mcp(services: Services) -> FastMCP:
 
     async def nas_import_diagnosis_tool() -> dict[str, Any]:
         """Diagnose WHY downloads are stuck importing into Radarr/Sonarr.
-        Scans both queues for import-stuck items and, for each, runs the
-        real access test as the arr's own uid inside its container to pin
-        the root cause: download-side permissions (the most common),
+        Scans both queues for import-stuck items and, for each, reads the
+        arr's OWN reason first (match_problem, sample_file, not_an_upgrade,
+        awaiting_metadata are benign or non-filesystem and need no chown),
+        then runs the real access test as the arr's own uid inside its
+        container to pin a filesystem cause: download-side permissions,
         library-side permissions, or a path-not-found/mount issue.
         Returns a specific diagnosis and, for permission cases, the exact
         chown/chmod remediation command — which is a filesystem change on
