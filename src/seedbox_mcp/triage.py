@@ -27,6 +27,14 @@ class Finding:
     fixable_by: str = "none"
     evidence: str = ""
     auto_fixed: bool = False
+    # Names the thing, not the wording: the same issue keeps the same key from
+    # cycle to cycle, so a reworded title isn't a new alert.
+    key: str = ""
+    escalated: bool = False
+
+    @property
+    def issue_key(self) -> str:
+        return self.key or slugify(self.title)
 
 
 FINDINGS_INSTRUCTION = (
@@ -36,9 +44,21 @@ FINDINGS_INSTRUCTION = (
     '"real" (true if it is a genuine problem, false if it is a false alarm), "reason" '
     '(why, one sentence), "recommendation" (what should happen, empty for healthy), '
     '"fixable_by" (one of "proven", "tap", "agent", "none"), "evidence" (IDs, paths, '
-    "or quoted numbers, may be empty). Report every check as its own finding, healthy "
+    'or quoted numbers, may be empty), "key" (a short stable name for the thing itself, '
+    'like "import-one-piece-s23e25" or "storage-media-pool": the same issue gets the same key '
+    "every time, however you word the title). Report every check as its own finding, healthy "
     "ones included. Do not wrap the array in markdown."
 )
+
+
+def known_issues_note(known: dict[str, str]) -> str:
+    if not known:
+        return ""
+    lines = "\n".join(f"- {key}: {title}" for key, title in sorted(known.items()))
+    return (
+        "\n\nIssues already reported to the operator, by key. If one is still present, give it "
+        f"the SAME key (word the title however you like):\n{lines}"
+    )
 
 
 def slugify(text: str) -> str:
@@ -118,6 +138,7 @@ def parse_findings(text: str) -> list[Finding]:
                 recommendation=item.get("recommendation", "").strip(),
                 fixable_by=item.get("fixable_by", "none"),
                 evidence=str(item.get("evidence", "")).strip(),
+                key=slugify(str(item.get("key") or "")) if item.get("key") else "",
             )
         )
     return findings
@@ -156,6 +177,8 @@ def save_run(findings: list[Finding]) -> str:
             "fixable_by": f.fixable_by,
             "evidence": f.evidence,
             "auto_fixed": f.auto_fixed,
+            "key": f.key,
+            "escalated": f.escalated,
         }
         for f in findings
     ]
@@ -192,11 +215,17 @@ def load_finding(run_id: str, finding_id: str) -> Finding | None:
 # ── rendering ────────────────────────────────────────────────────────────
 
 
+def mark_escalated(findings: list[Finding], escalated_keys: set[str]) -> None:
+    for f in findings:
+        if f.severity in _ACTIONABLE and not f.auto_fixed and f.issue_key in escalated_keys:
+            f.escalated = True
+
+
 def fingerprint(findings: list[Finding]) -> str | None:
     keys = sorted(
-        f"{f.severity}:{f.title}"
+        f"{f.severity}:{f.issue_key}"
         for f in findings
-        if f.severity in _ACTIONABLE and not f.auto_fixed
+        if f.severity in _ACTIONABLE and not f.auto_fixed and not f.escalated
     )
     if not keys:
         return None
@@ -220,8 +249,9 @@ def render_triage(findings: list[Finding], *, run_id: str | None = None) -> tupl
     pass it to get real Yes/No/More buttons; omit it (or pass None) to get
     plain text with no keyboard, e.g. for a one-off on-demand status check
     that has nowhere to route a button tap back to."""
-    active = [f for f in findings if not f.auto_fixed]
+    active = [f for f in findings if not f.auto_fixed and not f.escalated]
     auto = [f for f in findings if f.auto_fixed]
+    escalated = [f for f in findings if f.escalated]
     attention = [f for f in active if f.severity in _ACTIONABLE]
 
     header = f"<b>NAS OPS, {len(attention)} need your attention</b>" if attention else "<b>NAS OPS, all clear</b>"
@@ -240,6 +270,9 @@ def render_triage(findings: list[Finding], *, run_id: str | None = None) -> tupl
     if auto:
         body = "\n".join(f"✅ {escape(f.title)}: {escape(f.reason)}" for f in auto)
         blocks.append(body)
+
+    if escalated:
+        blocks.append("\n".join(f"\U0001f527 {escape(f.title)}: escalated, a worker is on it" for f in escalated))
 
     healthy = [f for f in active if f.severity == "healthy"]
     if healthy:

@@ -11,12 +11,14 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
+from seedbox_mcp import escalations
 from seedbox_mcp.bot_common import ChatState, _download_telegram_photo, _set_bot_commands, answer_callback
 from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
     ESCALATION_TOOLS,
     READ_ONLY_TOOLS,
+    extract_tool_text,
     run_agent_turn,
     trim_history,
 )
@@ -888,42 +890,54 @@ async def _handle_message(
     )
 
 
+async def _escalate_finding(settings: BotSettings, token: str, chat_id: int, finding: Finding, detail: str) -> None:
+    """Called directly, not through the model, so the worker's trace id is
+    recorded: the monitor stays quiet about this issue until that worker
+    finishes, then reports how it went."""
+    issue = f"The NAS Ops monitor reported this issue and the operator tapped Escalate on it:\n{detail}"
+    mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
+    try:
+        async with mcp_client:
+            result = await mcp_client.call_tool("escalate_to_worker", {"issue": issue})
+        response = json.loads(extract_tool_text(result))
+    except Exception:
+        logger.exception("escalation failed for finding %s", finding.id)
+        response = {}
+    trace_id = (response.get("data") or {}).get("trace_id") if response.get("ok") else None
+    if not trace_id:
+        reason = str(response.get("message") or "the worker system didn't answer").rstrip(".")
+        await send_message(token, chat_id, f"I couldn't escalate that: {reason}. It will stay on the reports.")
+        return
+    escalations.record(finding.issue_key, finding.title, trace_id)
+    await send_message(
+        token,
+        chat_id,
+        "Escalated to a worker. I won't flag this again while it's on it, and I'll message you when it finishes.",
+    )
+
+
 async def _run_finding_action(settings: BotSettings, token: str, chat_id: int, finding: Finding, action: str) -> None:
-    """Runs a targeted one-shot agent turn to act on a single digest/monitor
-    finding (the operator tapped "Fix it" or "Escalate" on a report), then
-    replies with what happened. Reuses digest.SYSTEM_PROMPT so the same
-    Tier 1 confirm=false-then-confirm=true discipline and escalate_to_worker
-    usage apply here as in the scheduled digest — a button tap is not a
-    softer safety path than the digest's own autonomous fixes."""
+    """Acts on a single digest/monitor finding the operator tapped a button
+    on. "Fix it" runs a one-shot agent turn with digest.SYSTEM_PROMPT, so the
+    same Tier 1 confirm=false-then-confirm=true discipline applies as in the
+    scheduled digest; "Escalate" goes straight to _escalate_finding."""
     from seedbox_mcp.digest import DIGEST_ACTION_TOOLS, SYSTEM_PROMPT as DIGEST_SYSTEM_PROMPT
 
     detail = (
         f"Title: {finding.title}\nReason: {finding.reason}\n"
         f"Recommendation: {finding.recommendation}\nEvidence: {finding.evidence}"
     )
-    if action == "fix":
-        task = (
-            "The operator tapped 'Fix it' on this finding from an earlier report:\n"
-            f"{detail}\n\n"
-            "Take the appropriate Tier 1 action now. Preview with confirm=false first, "
-            "verify the preview is correct, then call again with confirm=true. Reply "
-            "with exactly what you did, in one or two sentences. If no Tier 1 tool "
-            "actually applies here, say so plainly instead of forcing an unrelated action."
-        )
-        allowed_tools = READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS
-        action_tools = DIGEST_ACTION_TOOLS
-        escalation_tools = None
-    else:
-        task = (
-            "The operator tapped 'Escalate' on this finding from an earlier report:\n"
-            f"{detail}\n\n"
-            "Call escalate_to_worker with a clear description of this problem. Reply "
-            "confirming you did, in one sentence."
-        )
-        allowed_tools = READ_ONLY_TOOLS | ESCALATION_TOOLS
-        action_tools = set()
-        escalation_tools = ESCALATION_TOOLS
-
+    if action == "esc":
+        await _escalate_finding(settings, token, chat_id, finding, detail)
+        return
+    task = (
+        "The operator tapped 'Fix it' on this finding from an earlier report:\n"
+        f"{detail}\n\n"
+        "Take the appropriate Tier 1 action now. Preview with confirm=false first, "
+        "verify the preview is correct, then call again with confirm=true. Reply "
+        "with exactly what you did, in one or two sentences. If no Tier 1 tool "
+        "actually applies here, say so plainly instead of forcing an unrelated action."
+    )
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
     try:
         reply, _history, _pending_action, _known_entity_ids = await run_agent_turn(
@@ -931,9 +945,9 @@ async def _run_finding_action(settings: BotSettings, token: str, chat_id: int, f
             system_prompt=DIGEST_SYSTEM_PROMPT,
             mcp_client=mcp_client,
             model=settings.ollama_bot_model,
-            allowed_tools=allowed_tools,
-            action_tools=action_tools,
-            escalation_tools=escalation_tools,
+            allowed_tools=READ_ONLY_TOOLS | DIGEST_ACTION_TOOLS,
+            action_tools=DIGEST_ACTION_TOOLS,
+            escalation_tools=None,
             ollama_url=settings.ollama_url,
         )
     except Exception:

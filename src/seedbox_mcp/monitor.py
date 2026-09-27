@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import logging
 import time
@@ -11,6 +12,7 @@ from typing import Any
 import httpx
 from fastmcp import Client
 
+from seedbox_mcp import escalations
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
 from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
 from seedbox_mcp.config import Settings, configure_logging
@@ -26,6 +28,8 @@ from seedbox_mcp.triage import (
     FINDINGS_INSTRUCTION,
     Finding,
     fingerprint,
+    known_issues_note,
+    mark_escalated,
     parse_findings,
     render_triage,
     save_run,
@@ -562,7 +566,9 @@ _READ_ONLY_PREAMBLE = (
 )
 
 
-async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -> list[Finding]:
+async def run_monitor_cycle(
+    model: str | None = None, read_only: bool = False, known_issues: dict[str, str] | None = None
+) -> list[Finding]:
     """Runs one check cycle and returns the structured findings for it.
     An empty list means a clean cycle (nothing actionable) — the expected,
     common outcome. Deterministic-fix notes (queue resume, strike fix,
@@ -643,7 +649,7 @@ async def run_monitor_cycle(model: str | None = None, read_only: bool = False) -
     # (or didn't) differs.
     task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task + "\n\n" + FINDINGS_INSTRUCTION,
+        task + "\n\n" + FINDINGS_INSTRUCTION + known_issues_note(known_issues or {}),
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_monitor_model,
@@ -723,7 +729,15 @@ def main() -> None:
     parser.add_argument("--force-alert-test", action="store_true", help="Skip the sentinel check, always push.")
     args = parser.parse_args()
 
-    findings = asyncio.run(run_monitor_cycle(args.model))
+    settings = MonitorSettings()  # type: ignore[call-arg]
+    for outcome in escalations.collect_finished(Path(settings.dispatch_prompt_inbox).parent / "dispatch_inbox"):
+        print(outcome)
+        _send_to_operator(settings, html.escape(outcome), None, args.no_telegram)
+
+    escalated = escalations.load()
+    known = {**_load_alert_state().get("keys", {}), **{k: v.get("title", k) for k, v in escalated.items()}}
+    findings = asyncio.run(run_monitor_cycle(args.model, known_issues=known))
+    mark_escalated(findings, set(escalated))
     fp = fingerprint(findings)
     if fp is None and not args.force_alert_test:
         print(f"[{NO_ALERT_SENTINEL}] nothing actionable this cycle")
@@ -743,6 +757,9 @@ def main() -> None:
     # was pushed by THIS process — it's not in the bot's own chat history).
     # Cleared with the rest of the state on the all-clear path.
     new_state["text"] = text
+    new_state["keys"] = {
+        f.issue_key: f.title for f in findings if f.severity in ("needs_fix", "watch") and not f.auto_fixed
+    }
     _save_alert_state(new_state)
     print(text)
 
@@ -750,21 +767,25 @@ def main() -> None:
         print("[suppressed] same alert already pushed; staying quiet until it changes or the remind interval")
         return
 
-    if not args.no_telegram:
-        settings = MonitorSettings()  # type: ignore[call-arg]
-        if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
-            asyncio.run(
-                send_message_html(
-                    settings.nas_ops_telegram_bot_token.get_secret_value(),
-                    settings.nas_ops_telegram_allowed_chat_id,
-                    text,
-                    reply_markup=markup,
-                )
+    _send_to_operator(settings, text, markup, args.no_telegram)
+
+
+def _send_to_operator(settings: MonitorSettings, html_text: str, markup: dict | None, no_telegram: bool) -> None:
+    if no_telegram:
+        return
+    if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:
+        asyncio.run(
+            send_message_html(
+                settings.nas_ops_telegram_bot_token.get_secret_value(),
+                settings.nas_ops_telegram_allowed_chat_id,
+                html_text,
+                reply_markup=markup,
             )
-        else:
-            logger.warning(
-                "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
-            )
+        )
+    else:
+        logger.warning(
+            "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
+        )
 
 
 if __name__ == "__main__":
