@@ -54,3 +54,25 @@ def test_sabnzbd_advisory_note_becomes_needs_fix_and_pushes():
 def test_notes_empty_gives_no_findings():
     assert _notes_to_findings(None, None, None) == []
     assert _notes_to_findings("", "   ", None) == []
+
+
+def test_jellyseerr_scan_check_flags_stale_or_missing_libraries():
+    from seedbox_mcp.monitor import JELLYSEERR_SCAN_STALE_S, jellyseerr_scan_note
+
+    now = 10_000_000.0
+    fresh = {"libraries": [{"name": "Movies", "enabled": True, "lastScan": (now - 300) * 1000}]}
+    assert jellyseerr_scan_note(fresh, now) is None
+
+    stale = {
+        "libraries": [
+            {"name": "Movies", "enabled": True, "lastScan": (now - JELLYSEERR_SCAN_STALE_S - 60) * 1000},
+            {"name": "4K Movies", "enabled": False, "lastScan": 0},
+        ]
+    }
+    note = jellyseerr_scan_note(stale, now)
+    assert note is not None and "(Movies)" in note and "4K" not in note
+    (f,) = _notes_to_findings(note)
+    assert f.severity == "needs_fix" and not f.auto_fixed
+    assert f.title == "Jellyseerr hasn't finished a Plex scan in over 2 hours (Movies)"
+
+    assert "no Plex libraries switched on" in jellyseerr_scan_note({"libraries": []}, now)
