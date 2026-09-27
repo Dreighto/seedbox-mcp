@@ -67,12 +67,12 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
     """Returns (category, reason).
 
     category:
-      'stalled'      — dead download, safe to remove+blocklist+re-search
-      'import_issue' — stuck importing; report only, never auto-blocklist,
-                       because re-downloading won't clear an import hold
-                       (the arr's own reason decides; nas_import_diagnosis
-                       reads it)
-      None           — healthy / progressing normally
+      'stalled': dead download, safe to remove+blocklist+re-search
+      'import_issue': stuck importing; report only, never auto-blocklist,
+                      because re-downloading won't clear an import hold
+                      (the arr's own reason decides; nas_import_diagnosis
+                      reads it)
+      None: healthy / progressing normally
     """
     state = str(item.get("trackedDownloadState") or "").lower()
     tstatus = str(item.get("trackedDownloadStatus") or "").lower()
