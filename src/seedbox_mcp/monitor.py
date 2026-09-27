@@ -169,6 +169,10 @@ flagging or escalating. Trust that tool's diagnosis field:
 - not_an_upgrade (including Sonarr's "Not a Custom Format upgrade"): the \
 library already has an equal or better file. This is healthy. Do not page \
 the operator, do not say permissions, do not escalate_to_worker.
+- awaiting_metadata: Sonarr is holding an anime episode that aired within \
+the last day because TVDB has no absolute episode number for it yet. It \
+imports on its own. Healthy; do not page, do not say permissions, do not \
+escalate_to_worker.
 - match_problem / sample_file / download_permissions / library_permissions \
 / path_not_found: those are real; report or escalate as appropriate.
 Never invent "likely a permissions or path issue" from an importblocked \

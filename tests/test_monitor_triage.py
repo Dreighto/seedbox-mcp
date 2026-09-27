@@ -6,8 +6,9 @@ def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
     note = (
         "Auto-fixed stalled downloads (removed, blocklisted, re-searching) after 2+ cycles "
         "stalled: X.\n"
-        '2 download(s) stuck on import, likely a permissions or path issue (NOT auto-fixed, '
-        'since re-downloading won\'t fix that): "Y" (stuck importing). Worth a look.'
+        '2 download(s) stuck on import (NOT auto-fixed, since re-downloading won\'t clear an '
+        'import hold): "Y" (stuck importing). Run nas_import_diagnosis for the arr\'s own reason '
+        'before calling it permissions or escalating. Worth a look.'
     )
     out = _notes_to_findings(note)
     assert len(out) == 2

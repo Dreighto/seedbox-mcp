@@ -336,6 +336,9 @@ Never just blocklist an import failure. Route by diagnosis:
 already has an equal or better file. This is NOT permissions. Clear the \
 queue item with sonarr_queue_action/radarr_queue_action action=blocklist \
 so the leftover download stops sitting in importblocked; do not escalate.
+  - awaiting_metadata: Sonarr is holding an anime episode that aired within \
+the last day because TVDB has no absolute episode number yet. It imports on \
+its own; say so and leave the queue item alone. Not permissions.
   - match_problem where the title simply ISN'T IN THE LIBRARY ("Unknown \
 Series"/unknown movie): this is fixable. Search the title to get its \
 tmdb_id, then nasdoom_fix_import(kind, tmdb_id) — it adds the missing title \

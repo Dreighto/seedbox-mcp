@@ -68,9 +68,10 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
 
     category:
       'stalled'      — dead download, safe to remove+blocklist+re-search
-      'import_issue' — stuck importing (usually PERMISSIONS); report only,
-                       never auto-blocklist, because re-downloading won't
-                       fix a permissions/path problem, it'll just loop
+      'import_issue' — stuck importing; report only, never auto-blocklist,
+                       because re-downloading won't clear an import hold
+                       (the arr's own reason decides; nas_import_diagnosis
+                       reads it)
       None           — healthy / progressing normally
     """
     state = str(item.get("trackedDownloadState") or "").lower()
@@ -234,8 +235,9 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
     if import_issues:
         titles = "; ".join(f'"{i["_title"]}" ({i["_reason"]})' for i in import_issues[:5])
         notes.append(
-            f"{len(import_issues)} download(s) stuck on import, likely a permissions or path issue "
-            f"(NOT auto-fixed, since re-downloading won't fix that): {titles}. Worth a look."
+            f"{len(import_issues)} download(s) stuck on import (NOT auto-fixed, since re-downloading "
+            f"won't clear an import hold): {titles}. Run nas_import_diagnosis for the arr's own "
+            "reason before calling it permissions or escalating. Worth a look."
         )
     if services.sabnzbd is not None:
         try:
