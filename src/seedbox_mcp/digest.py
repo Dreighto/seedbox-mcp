@@ -8,6 +8,7 @@ import re
 
 from fastmcp import Client
 
+from seedbox_mcp import escalations
 from seedbox_mcp.chat.ollama_ai import (
     ACTION_TOOLS,
     DEFAULT_OLLAMA_URL,
@@ -18,7 +19,14 @@ from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.graduation import graduation_nudge
 from seedbox_mcp.model_registry import DEFAULT_DIGEST_MODEL as _DEFAULT_DIGEST_MODEL_ENTRY
 from seedbox_mcp.telegram import send_message_html
-from seedbox_mcp.triage import FINDINGS_INSTRUCTION, parse_findings, render_triage, save_run
+from seedbox_mcp.triage import (
+    FINDINGS_INSTRUCTION,
+    known_issues_note,
+    mark_escalated,
+    parse_findings,
+    render_triage,
+    save_run,
+)
 
 logger = logging.getLogger("seedbox_mcp.digest")
 
@@ -151,7 +159,10 @@ async def run_digest(task: str, model: str | None = None) -> str:
     # No history — each scheduled run is a fresh report, not a continuation
     # of yesterday's. Multi-turn memory is a telegram_bot.py concept.
     text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task + "\n\n" + FINDINGS_INSTRUCTION,
+        task
+        + "\n\n"
+        + FINDINGS_INSTRUCTION
+        + known_issues_note({k: v.get("title", k) for k, v in escalations.load().items()}),
         system_prompt=SYSTEM_PROMPT,
         mcp_client=mcp_client,
         model=model or settings.ollama_digest_model,
@@ -186,6 +197,7 @@ def main() -> None:
     result = asyncio.run(run_digest(args.task, args.model))
 
     findings = parse_findings(result)
+    mark_escalated(findings, escalations.active_keys())
     run_id = save_run(findings)
     rendered, markup = render_triage(findings, run_id=run_id)
 
@@ -215,8 +227,7 @@ def main() -> None:
             )
         else:
             logger.warning(
-                "Telegram not configured — set NAS_OPS_TELEGRAM_BOT_TOKEN + "
-                "NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
+                "Telegram not configured: set NAS_OPS_TELEGRAM_BOT_TOKEN + NAS_OPS_TELEGRAM_ALLOWED_CHAT_ID in .env"
             )
 
 

@@ -22,3 +22,4 @@ todo_human.md
 .friend_error_watch_state.json
 .digest_runs/
 .serena/
+.escalations.json
