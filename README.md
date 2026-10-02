@@ -321,3 +321,9 @@ run and its findings beside the other monitor state files; model-only findings
 stay active between turns so skipped checks do not reset alert reminders.
 On-demand read-only status checks always run their model turn and do not change
 this scheduled state.
+
+A newly failed or retired cloud model can take up to 2 hours to be detected by
+the monitor's liveness sweep. These pings consume cloud requests too, so they
+share the approved model cadence. Existing liveness alerts remain active
+between sweeps. Problems detected by model-free checks still prompt an immediate
+model run on that 30-minute cycle.

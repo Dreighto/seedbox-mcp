@@ -673,7 +673,7 @@ async def run_monitor_cycle(
     if not read_only:
         last_run_ts, cached_findings = _load_model_state()
         needs_judgment = any(f.real and not f.auto_fixed for f in deterministic_findings)
-        if not needs_judgment and last_run_ts > 0 and model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
+        if not needs_judgment and last_run_ts > 0 and 0 <= model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
             logger.info("monitor: model checks skipped; next routine run is due after 2 hours")
             return deterministic_findings + cached_findings
         # Failed attempts consume model requests too; keep the last findings

@@ -150,6 +150,7 @@ async def test_failed_model_attempt_keeps_findings_and_deterministic_reporting(c
         "[]",
         '{"last_run_ts":Infinity,"findings":[]}',
         '{"last_run_ts":NaN,"findings":[]}',
+        '{"last_run_ts":200000,"findings":[]}',
         '{"last_run_ts":1,"findings":[{}]}',
     ],
 )
