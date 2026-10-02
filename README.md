@@ -303,3 +303,27 @@ Are there any stuck or import-blocked items in the Radarr or Sonarr queue? If so
 - **Partial status warnings:** one upstream may be down while the MCP server itself is healthy.
 
 Automated tests (`just test`) use mocked upstreams and do not require live services. Use `just test-live` to test access to external services.
+
+## NAS Ops monitor cadence
+
+The systemd timer stays at every 30 minutes. Queue resume, download strikes,
+service recovery, post-import quality checks, storage checks, Jellyseerr scan
+checks, and alert bookkeeping run on every cycle. Model liveness pings and the
+routine model turn run every 2 hours, or immediately when a deterministic check
+reports an unresolved finding. Successful automatic fixes alone do not trigger
+an extra model turn. The monitor no longer sends an interactive keep-warm ping.
+
+Routine monitor turns default to DeepSeek Flash (`deepseek-v4.1-flash:cloud`).
+The daily digest, bot investigation/diagnosis, and photo identification keep
+DeepSeek Pro (`deepseek-v4-pro:cloud`). `OLLAMA_MONITOR_MODEL` can override the
+routine default. `.monitor_model_state.json` persists the last attempted model
+run and its findings beside the other monitor state files; model-only findings
+stay active between turns so skipped checks do not reset alert reminders.
+On-demand read-only status checks always run their model turn and do not change
+this scheduled state.
+
+A newly failed or retired cloud model can take up to 2 hours to be detected by
+the monitor's liveness sweep. These pings consume cloud requests too, so they
+share the approved model cadence. Existing liveness alerts remain active
+between sweeps. Problems detected by model-free checks still prompt an immediate
+model run on that 30-minute cycle.

@@ -14,7 +14,7 @@ logger = logging.getLogger("seedbox_mcp.model_health")
 
 # Generous on purpose: a model with no recent traffic (e.g. one used only by a rare path,
 # like photo identify) is essentially always cold
-# between 30-min monitor cycles, and this codebase already has a documented,
+# between 2-hour monitor model checks, and this codebase already has a documented,
 # live-confirmed fact about exactly that — Ollama Cloud calls that omit
 # keep_alive see ~4-5 min cold-start latency after an idle gap (see
 # ollama_ai.py's own KEEP_ALIVE comment). A 30s timeout mistook that for a
