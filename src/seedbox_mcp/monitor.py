@@ -5,16 +5,17 @@ import asyncio
 import html
 import json
 import logging
+import math
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import httpx
 from fastmcp import Client
 
 from seedbox_mcp import escalations
 from seedbox_mcp.action_audit import rate_limit_exceeded, record_action
-from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, KEEP_ALIVE, run_agent_turn
+from seedbox_mcp.chat.ollama_ai import DEFAULT_OLLAMA_URL, run_agent_turn
 from seedbox_mcp.config import Settings, configure_logging
 from seedbox_mcp.download_strikes import run_download_strike_check
 from seedbox_mcp.model_health import check_models
@@ -23,7 +24,6 @@ from seedbox_mcp.model_registry import DEFAULT_MONITOR_MODEL as _DEFAULT_MONITOR
 from seedbox_mcp.quality_guard import run_quality_guard
 from seedbox_mcp.runtime import build_services
 from seedbox_mcp.telegram import send_message_html
-from seedbox_mcp.telegram_bot import DEFAULT_BOT_MODEL
 from seedbox_mcp.tools.host_health import AUTO_RECOVER_SERVICES
 from seedbox_mcp.triage import (
     FINDINGS_INSTRUCTION,
@@ -39,16 +39,8 @@ from seedbox_mcp.triage import (
 
 logger = logging.getLogger("seedbox_mcp.monitor")
 
-# The digest's bigger, slower model, not the interactive bot's fast/cheap
-# one — live testing found gpt-oss:20b-cloud inconsistent on this specific
-# job: a multi-step autonomous fix (confirm=false preview -> confirm=true
-# execute) sometimes completed cleanly and sometimes stopped after the
-# preview with no confirm=true, silently leaving the real problem
-# unfixed. Nobody's waiting live on a background cycle the way they are on
-# an interactive reply, so correctness matters more than the few seconds of
-# latency difference — same tradeoff logic as digest.py's own model choice.
-# Sourced from model_registry — see there for cross-file rationale — so this
-# string exists in exactly one place.
+# Routine model checks use Flash; diagnostic bot paths and the daily digest
+# keep their Pro model in model_registry.
 DEFAULT_MONITOR_MODEL = _DEFAULT_MONITOR_MODEL_ENTRY.name
 
 # Deliberately the ORIGINAL Tier 1 set only — not everything ACTION_TOOLS now
@@ -69,7 +61,7 @@ MONITOR_ACTION_TOOLS: set[str] = {
 }
 MONITOR_ESCALATION_TOOLS: set[str] = {"escalate_to_worker"}
 
-# Context-bloat control: the monitor runs every 30 min and has a FIXED job
+# Context-bloat control: the model runs every 2 hours or on a finding and has a FIXED job
 # (the check list in SYSTEM_PROMPT), so it declares exactly the read tools it
 # needs rather than inheriting the whole READ_ONLY_TOOLS set. Inheriting the
 # global set carried ~48 tool schemas (~7k tokens) per cycle while using ~12 —
@@ -142,8 +134,9 @@ MEDIA_POOL_FREE_ALERT_THRESHOLD_BYTES = 2 * 1024**4
 NO_ALERT_SENTINEL = "NO_ALERT_NEEDED"
 
 SYSTEM_PROMPT = f"""\
-You are a frequent, lightweight NAS health monitor — you run every 30 \
-minutes, not once a day like the full digest. Almost every run should end \
+You are a lightweight NAS health monitor. Deterministic checks run every 30 \
+minutes; your model check runs every 2 hours or when those checks find an \
+unresolved problem. Almost every run should end \
 with nothing to report; you exist to catch things BETWEEN the operator's \
 own checks and the daily digest, not to generate routine chatter.
 
@@ -252,28 +245,6 @@ class MonitorSettings(Settings):
     @property
     def mcp_url(self) -> str:
         return f"http://{self.mcp_host}:{self.mcp_port}/mcp"
-
-
-async def _keep_interactive_model_warm(ollama_url: str) -> None:
-    """Trivial no-tools ping to the INTERACTIVE bot's model (not this
-    monitor's own, bigger one) with a long keep_alive — piggybacks on this
-    cycle's existing 30-min cadence so gpt-oss:20b-cloud stays resident
-    through normal operating hours instead of only getting warmed by
-    whenever the operator happens to message next. Best-effort: a failure
-    here shouldn't fail the actual monitor cycle."""
-    try:
-        async with httpx.AsyncClient(base_url=ollama_url, timeout=30.0) as http:
-            await http.post(
-                "/api/chat",
-                json={
-                    "model": DEFAULT_BOT_MODEL,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "stream": False,
-                    "keep_alive": KEEP_ALIVE,
-                },
-            )
-    except httpx.HTTPError:
-        logger.warning("keep-warm ping for %s failed (non-fatal)", DEFAULT_BOT_MODEL, exc_info=True)
 
 
 async def _deterministic_queue_resume(mcp_client: Client[Any]) -> str | None:
@@ -395,11 +366,9 @@ async def _deterministic_model_liveness_check(ollama_url: str) -> str | None:
     real request. That's not something an LLM cycle would reliably catch
     either (it has no reason to probe a model it isn't itself using), so
     this covers ALL registered models, not just DEFAULT_MONITOR_MODEL.
-    No cooldown/loop-guard needed here unlike the restart checks above — a
-    dead model can't be "fixed" by retrying, so it just keeps reporting
-    every cycle (throttled by the existing alert-dedup/remind-interval in
-    main(), same as any other persistent unresolved finding) until a human
-    swaps the model string in model_registry.py."""
+    Runs alongside the model turn every 2 hours or on an unresolved
+    deterministic finding. Cached liveness findings remain reportable on
+    intervening cycles, under the existing alert-dedup/remind interval."""
     problems = await check_models(ollama_url, ALL_MODELS)
     if not problems:
         return None
@@ -417,8 +386,7 @@ def jellyseerr_scan_note(plex_settings: dict[str, Any], now_ts: float) -> str | 
     libraries = [lib for lib in plex_settings.get("libraries") or [] if lib.get("enabled")]
     if not libraries:
         return (
-            "Jellyseerr has no Plex libraries switched on, so the friend bot can't tell what's on Plex. "
-            "Worth a look."
+            "Jellyseerr has no Plex libraries switched on, so the friend bot can't tell what's on Plex. Worth a look."
         )
     stale = [
         str(lib.get("name"))
@@ -603,6 +571,32 @@ _READ_ONLY_PREAMBLE = (
 )
 
 
+MODEL_RUN_INTERVAL_S = 2 * 3600
+MONITOR_MODEL_STATE_PATH = Path(__file__).resolve().parent.parent.parent / ".monitor_model_state.json"
+
+
+def _load_model_state() -> tuple[float, list[Finding]]:
+    try:
+        state = json.loads(MONITOR_MODEL_STATE_PATH.read_text())
+        last_run = float(state["last_run_ts"])
+        if not math.isfinite(last_run) or last_run <= 0:
+            return 0.0, []
+        findings = [Finding(**item) for item in state["findings"]]
+        return last_run, findings
+    except (OSError, json.JSONDecodeError, KeyError, ValueError, TypeError):
+        return 0.0, []
+
+
+def _save_model_state(now_ts: float, findings: list[Finding]) -> None:
+    # Findings are cached as well as the cadence: an unobserved cycle cannot
+    # declare a model-only issue resolved or reset its alert reminder clock.
+    state = {"last_run_ts": now_ts, "findings": [asdict(finding) for finding in findings]}
+    try:
+        MONITOR_MODEL_STATE_PATH.write_text(json.dumps(state))
+    except OSError:
+        logger.exception("failed to persist model state to %s", MONITOR_MODEL_STATE_PATH)
+
+
 async def run_monitor_cycle(
     model: str | None = None, read_only: bool = False, known_issues: dict[str, str] | None = None
 ) -> list[Finding]:
@@ -619,12 +613,11 @@ async def run_monitor_cycle(
     below and gives the model only read tools — no action_tools, no
     escalation_tools — so an operator asking "what's the status" can never
     trigger a real restart or queue change as a side effect. The scheduled
-    path (`read_only=False`, the default) is unchanged: it's the only one
-    with standing authority to act autonomously."""
+    path (`read_only=False`, the default) runs deterministic checks every
+    cycle, with model work every 2 hours or on an unresolved finding. Only
+    this scheduled path has standing authority to act autonomously."""
     settings = MonitorSettings()  # type: ignore[call-arg]
     mcp_client = Client(settings.mcp_url, auth=settings.mcp_bearer_token.get_secret_value())
-
-    await _keep_interactive_model_warm(settings.ollama_url)
 
     queue_fix_note = None
     strike_note = None
@@ -634,14 +627,6 @@ async def run_monitor_cycle(
     storage_note = None
     jellyseerr_note = None
     if not read_only:
-        # Cheap (a handful of trivial pings), so it runs every scheduled
-        # cycle rather than being throttled — see
-        # _deterministic_model_liveness_check's own docstring for why.
-        try:
-            model_liveness_note = await _deterministic_model_liveness_check(settings.ollama_url)
-        except Exception:
-            logger.exception("model liveness check failed (non-fatal)")
-
         try:
             storage_note = await _deterministic_storage_check(mcp_client)
         except Exception:
@@ -680,6 +665,24 @@ async def run_monitor_cycle(
         except Exception:
             logger.exception("service recovery check failed (non-fatal)")
 
+    deterministic_findings = _notes_to_findings(
+        queue_fix_note, strike_note, quality_guard_note, recovery_note, storage_note, jellyseerr_note
+    )
+    if not read_only:
+        last_run_ts, cached_findings = _load_model_state()
+        needs_judgment = any(f.real and not f.auto_fixed for f in deterministic_findings)
+        model_run_ts = time.time()
+        if not needs_judgment and last_run_ts > 0 and model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
+            logger.info("monitor: model checks skipped; next routine run is due after 2 hours")
+            return deterministic_findings + cached_findings
+        # Failed attempts consume model requests too; keep the last findings
+        # until a successful turn replaces them, without retrying every cycle.
+        _save_model_state(model_run_ts, cached_findings)
+        try:
+            model_liveness_note = await _deterministic_model_liveness_check(settings.ollama_url)
+        except Exception:
+            logger.exception("model liveness check failed (non-fatal)")
+
     # Spelled out as an explicit checklist in the TASK message, not just
     # buried in the system prompt — live testing found the model skip
     # nasdoom_queue entirely in a cycle where it was the one tool with an
@@ -691,41 +694,54 @@ async def run_monitor_cycle(
     # between the two — only the preamble describing what already happened
     # (or didn't) differs.
     task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
-    text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
-        task + "\n\n" + FINDINGS_INSTRUCTION + known_issues_note(known_issues or {}),
-        system_prompt=SYSTEM_PROMPT,
-        mcp_client=mcp_client,
-        model=model or settings.ollama_monitor_model,
-        allowed_tools=MONITOR_READ_ONLY_TOOLS
-        if read_only
-        else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
-        action_tools=set() if read_only else MONITOR_ACTION_TOOLS,
-        escalation_tools=set() if read_only else MONITOR_ESCALATION_TOOLS,
-        ollama_url=settings.ollama_url,
-        # Six independent signals to check in one turn, each a real chance
-        # to consume a round on a hallucinated-then-retried kwarg (an
-        # observed live pattern) — the default budget is tuned for a
-        # 1-2-tool interactive reply, not a full sweep. Bumped from an
-        # initial 14 after a live run still burned through it on kwarg
-        # retries before reaching every check.
-        max_tool_rounds=20,
-    )
+    if deterministic_findings:
+        task += "\n\nDeterministic check results:\n" + "\n".join(f.reason for f in deterministic_findings)
+    try:
+        text, _history, _pending_action, _known_entity_ids = await run_agent_turn(
+            task + "\n\n" + FINDINGS_INSTRUCTION + known_issues_note(known_issues or {}),
+            system_prompt=SYSTEM_PROMPT,
+            mcp_client=mcp_client,
+            model=model or settings.ollama_monitor_model,
+            allowed_tools=MONITOR_READ_ONLY_TOOLS
+            if read_only
+            else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
+            action_tools=set() if read_only else MONITOR_ACTION_TOOLS,
+            escalation_tools=set() if read_only else MONITOR_ESCALATION_TOOLS,
+            ollama_url=settings.ollama_url,
+            # Six independent signals to check in one turn, each a real chance
+            # to consume a round on a hallucinated-then-retried kwarg (an
+            # observed live pattern) — the default budget is tuned for a
+            # 1-2-tool interactive reply, not a full sweep. Bumped from an
+            # initial 14 after a live run still burned through it on kwarg
+            # retries before reaching every check.
+            max_tool_rounds=20,
+        )
+    except Exception:
+        if read_only:
+            raise
+        logger.exception("monitor model turn failed; retaining previous findings")
+        retained = {finding.issue_key: finding for finding in cached_findings}
+        retained.update({finding.issue_key: finding for finding in _notes_to_findings(model_liveness_note)})
+        failed_check = Finding(
+            id="monitor-model-check-failed",
+            severity="watch",
+            title="Monitor model check failed",
+            real=True,
+            reason="Model findings could not be refreshed; retrying on the next due model run.",
+            fixable_by="none",
+        )
+        retained.pop(failed_check.issue_key, None)
+        retained_findings = [failed_check, *retained.values()]
+        _save_model_state(model_run_ts, retained_findings)
+        return deterministic_findings + retained_findings
     # Deterministic-fix notes always surface (they describe real actions
     # taken or real import problems flagged), even on an otherwise-silent
     # cycle where the LLM returned the no-alert sentinel.
     llm_findings = [] if text.strip() == NO_ALERT_SENTINEL else parse_findings(text)
-    return (
-        _notes_to_findings(
-            queue_fix_note,
-            strike_note,
-            quality_guard_note,
-            recovery_note,
-            model_liveness_note,
-            storage_note,
-            jellyseerr_note,
-        )
-        + llm_findings
-    )
+    model_findings = _notes_to_findings(model_liveness_note) + llm_findings
+    if not read_only:
+        _save_model_state(model_run_ts, model_findings)
+    return deterministic_findings + model_findings
 
 
 # Alert-dedup state: the fingerprint of the last alert we actually pushed,
@@ -819,7 +835,9 @@ def main() -> None:
     _send_to_operator(settings, text, markup, args.no_telegram)
 
 
-def _send_to_operator(settings: MonitorSettings, html_text: str, markup: dict | None, no_telegram: bool) -> None:
+def _send_to_operator(
+    settings: MonitorSettings, html_text: str, markup: dict[str, Any] | None, no_telegram: bool
+) -> None:
     if no_telegram:
         return
     if settings.nas_ops_telegram_bot_token and settings.nas_ops_telegram_allowed_chat_id:

@@ -1,21 +1,37 @@
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from seedbox_mcp.config import Settings
 from seedbox_mcp.monitor import (
     MONITOR_ACTION_TOOLS,
     MONITOR_ESCALATION_TOOLS,
     MONITOR_READ_ONLY_TOOLS,
+    MonitorSettings,
     run_monitor_cycle,
 )
 
 _MOD = "seedbox_mcp.monitor"
 
 
+@pytest.fixture(autouse=True)
+def isolated_monitor(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monitor_settings = MonitorSettings(_env_file=None, **settings.model_dump())
+    monkeypatch.setattr(f"{_MOD}.MonitorSettings", lambda: monitor_settings)
+    monkeypatch.setattr(f"{_MOD}.MONITOR_MODEL_STATE_PATH", tmp_path / "model.json")
+    for check in (
+        "_deterministic_model_liveness_check",
+        "_deterministic_storage_check",
+        "_deterministic_jellyseerr_scan_check",
+        "run_quality_guard",
+    ):
+        monkeypatch.setattr(f"{_MOD}.{check}", AsyncMock(return_value=None))
+
+
 @pytest.mark.asyncio
 async def test_read_only_skips_deterministic_fixers_and_strips_action_tools() -> None:
     with (
-        patch(f"{_MOD}._keep_interactive_model_warm", new=AsyncMock(return_value=None)),
         patch(f"{_MOD}._deterministic_queue_resume", new=AsyncMock(return_value="should not run")) as queue_mock,
         patch(f"{_MOD}.run_download_strike_check", new=AsyncMock(return_value="should not run")) as strike_mock,
         patch(f"{_MOD}._deterministic_service_recovery", new=AsyncMock(return_value="should not run")) as recovery_mock,
@@ -37,7 +53,6 @@ async def test_read_only_skips_deterministic_fixers_and_strips_action_tools() ->
 @pytest.mark.asyncio
 async def test_default_scheduled_cycle_still_runs_deterministic_fixers_and_keeps_action_tools() -> None:
     with (
-        patch(f"{_MOD}._keep_interactive_model_warm", new=AsyncMock(return_value=None)),
         patch(f"{_MOD}._deterministic_queue_resume", new=AsyncMock(return_value=None)) as queue_mock,
         patch(f"{_MOD}.run_download_strike_check", new=AsyncMock(return_value=None)) as strike_mock,
         patch(f"{_MOD}._deterministic_service_recovery", new=AsyncMock(return_value=None)) as recovery_mock,

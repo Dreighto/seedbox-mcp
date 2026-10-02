@@ -44,8 +44,8 @@ INVESTIGATE_MODEL = CloudModel("deepseek-v4-pro:cloud", "NAS Ops bot: investigat
 # Scheduled daily digest — a background batch job, so quality over latency.
 DEFAULT_DIGEST_MODEL = CloudModel("deepseek-v4-pro:cloud", "Digest: scheduled report model")
 
-# Scheduled monitor cycle (every 30 min) — same batch-job tradeoff as digest.
-DEFAULT_MONITOR_MODEL = CloudModel("deepseek-v4-pro:cloud", "Monitor: scheduled check-cycle model")
+# Routine monitor model check (every 2 hours or on an unresolved finding).
+DEFAULT_MONITOR_MODEL = CloudModel("deepseek-v4.1-flash:cloud", "Monitor: scheduled check-cycle model")
 
 ALL_MODELS: tuple[CloudModel, ...] = (
     DEFAULT_BOT_MODEL,
