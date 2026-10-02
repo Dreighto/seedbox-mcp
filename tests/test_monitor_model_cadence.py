@@ -238,3 +238,16 @@ async def test_first_failed_model_run_is_reported_and_next_success_clears_it(cyc
     monkeypatch.setattr(monitor.time, "time", lambda: _START + 7200)
     assert await monitor.run_monitor_cycle() == []
     assert monitor._load_model_state()[1] == []
+
+
+@pytest.mark.asyncio
+async def test_liveness_exception_still_runs_model_and_read_only_does_not_ping(cycle, monkeypatch) -> None:
+    cycle["_deterministic_model_liveness_check"].side_effect = RuntimeError("ping unavailable")
+    assert await monitor.run_monitor_cycle() == []
+    cycle["run_agent_turn"].assert_awaited_once()
+    assert monitor._load_model_state()[0] == _START
+    before = monitor.MONITOR_MODEL_STATE_PATH.read_text()
+    assert await monitor.run_monitor_cycle(read_only=True) == []
+    assert cycle["run_agent_turn"].await_count == 2
+    cycle["_deterministic_model_liveness_check"].assert_awaited_once()
+    assert monitor.MONITOR_MODEL_STATE_PATH.read_text() == before

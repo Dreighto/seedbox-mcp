@@ -668,10 +668,11 @@ async def run_monitor_cycle(
     deterministic_findings = _notes_to_findings(
         queue_fix_note, strike_note, quality_guard_note, recovery_note, storage_note, jellyseerr_note
     )
+    cached_findings: list[Finding] = []
+    model_run_ts = time.time()
     if not read_only:
         last_run_ts, cached_findings = _load_model_state()
         needs_judgment = any(f.real and not f.auto_fixed for f in deterministic_findings)
-        model_run_ts = time.time()
         if not needs_judgment and last_run_ts > 0 and model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
             logger.info("monitor: model checks skipped; next routine run is due after 2 hours")
             return deterministic_findings + cached_findings
@@ -710,7 +711,7 @@ async def run_monitor_cycle(
             ollama_url=settings.ollama_url,
             # Six independent signals to check in one turn, each a real chance
             # to consume a round on a hallucinated-then-retried kwarg (an
-            # observed live pattern) — the default budget is tuned for a
+            # observed live pattern); the default budget is tuned for a
             # 1-2-tool interactive reply, not a full sweep. Bumped from an
             # initial 14 after a live run still burned through it on kwarg
             # retries before reaching every check.
