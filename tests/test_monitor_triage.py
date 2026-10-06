@@ -19,7 +19,10 @@ def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
 
     assert stuck.auto_fixed is False
     assert stuck.severity == "needs_fix"
+    assert stuck.issue_key == "import-holds"
     assert fingerprint([stuck]) is not None
+    grown = _notes_to_findings(note.replace("2 download(s)", "54 download(s)", 1))
+    assert fingerprint([grown[1]]) == fingerprint([stuck])
 
 
 def test_queue_resume_note_becomes_autofixed_watch():
@@ -48,7 +51,10 @@ def test_sabnzbd_advisory_note_becomes_needs_fix_and_pushes():
     f = out[0]
     assert f.severity == "needs_fix"
     assert f.auto_fixed is False
+    assert f.issue_key == "sab-history-window"
     assert fingerprint([f]) is not None
+    other = _notes_to_findings("SABnzbd download history has grown to 61 items, approaching the 60-item window.")
+    assert fingerprint(other) == fingerprint([f])
 
 
 def test_notes_empty_gives_no_findings():

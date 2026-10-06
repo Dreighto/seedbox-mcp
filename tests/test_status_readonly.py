@@ -57,6 +57,7 @@ async def test_default_scheduled_cycle_still_runs_deterministic_fixers_and_keeps
         patch(f"{_MOD}.run_download_strike_check", new=AsyncMock(return_value=None)) as strike_mock,
         patch(f"{_MOD}._deterministic_service_recovery", new=AsyncMock(return_value=None)) as recovery_mock,
         patch(f"{_MOD}.run_agent_turn", new=AsyncMock(return_value=("[]", [], None, {}))) as agent_mock,
+        patch(f"{_MOD}.dispatch_listener_up", return_value=True),
     ):
         await run_monitor_cycle()
 
@@ -71,3 +72,19 @@ async def test_default_scheduled_cycle_still_runs_deterministic_fixers_and_keeps
     assert kwargs["action_tools"] != set()
     assert kwargs["escalation_tools"] == MONITOR_ESCALATION_TOOLS
     assert kwargs["escalation_tools"] != set()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_cycle_does_not_offer_escalation_when_dispatch_is_down() -> None:
+    with (
+        patch(f"{_MOD}._deterministic_queue_resume", new=AsyncMock(return_value=None)),
+        patch(f"{_MOD}.run_download_strike_check", new=AsyncMock(return_value=None)),
+        patch(f"{_MOD}._deterministic_service_recovery", new=AsyncMock(return_value=None)),
+        patch(f"{_MOD}.run_agent_turn", new=AsyncMock(return_value=("[]", [], None, {}))) as agent_mock,
+        patch(f"{_MOD}.dispatch_listener_up", return_value=False),
+    ):
+        await run_monitor_cycle()
+
+    _args, kwargs = agent_mock.call_args
+    assert kwargs["escalation_tools"] == set()
+    assert "Worker dispatch is not reachable" in agent_mock.call_args.args[0]
