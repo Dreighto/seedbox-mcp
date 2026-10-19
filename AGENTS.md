@@ -1,48 +1,26 @@
 # Agent rules: seedbox-mcp (NAS/media ops MCP server + bots)
 
-Every agent working in this repo (Claude Code, Codex, Gemini, Cursor, OpenCode, DeepSeek,
-all of them) follows this file. Read it before touching anything. `README.md` is the
-operator-facing reference (config, deployment, example prompts); this file is about agent
-behavior, it doesn't restate that.
+`README.md` is the operator reference (config, deployment, example prompts) and
+`docs/architecture.md` says what runs here, how the code is layered and the tech stack.
+This file is how agents behave here.
 
-## What this is
+## Running and changing it
 
-Not just an MCP server. Two co-hosted services plus several unattended daemons, all in
-`src/seedbox_mcp/`:
+- Runs on room as systemd services (`seedbox-*`) straight from the `~/dev/seedbox-mcp`
+  checkout, so merging to `main` and pulling there is the deploy; restart the changed
+  services with `sudo systemctl restart seedbox-<name>`.
+- Each Telegram bot is hard-allowlisted by `chat_id`: an unlisted chat is silently
+  dropped. Add the chat_id explicitly; don't assume the bot replies to anyone who finds it.
+- Before adding a tool or an integration, read the three layers in `docs/architecture.md`.
+  `server.py` docstrings are the model-facing tool contract: write them like user-facing copy.
+- No CI workflow exists: `just check` and `just test` are the only gate, so run them before
+  claiming anything works. Tests tagged `live` (`-m live`) hit real services and run only
+  with `LIVE_TESTS=1`, never by default.
+- For FastMCP, Starlette and asyncio, load the workspace's Python knowledge-base skill
+  (`knowledge-base/python/SKILL.md`) and verify APIs against current docs when unsure
+  rather than writing from memory.
 
-- **MCP server** (FastMCP over Starlette/uvicorn, `/mcp` endpoint): ~50 tools over Plex,
-  Radarr, Sonarr, Prowlarr, SABnzbd, Tautulli, Jellyseerr, AdGuard, Gotify, Tdarr, Uptime
-  Kuma, the in-house **NASDOOM** BFF, and NAS host-level ops over SSH.
-- **Chat surface** (`seedbox-chat`): Plex-authenticated web chat for family members without
-  a Claude account.
-- **Two Telegram bots**: operator-only (`@nas_doombot`) and friend-facing
-  (`@nasdoom_helperbot`), each hard-allowlisted by `chat_id` (an unlisted chat is silently
-  dropped; add the chat_id explicitly, don't assume "the bot replies to anyone who finds it").
-  The friend bot asks Claude on the operator's subscription first and falls back to a
-  local Ollama model; everything else asks Ollama Cloud first and falls back to the
-  subscription models on a 429 (`chat/subscription_models.py`).
-- **Unattended daemons**: `monitor.py` (check-cycle triage loop), `digest.py`, plus
-  friend-notify/error-watch jobs.
-
-Runs on room as systemd services (`seedbox-*`) straight from the `~/dev/seedbox-mcp`
-checkout, so merging to `main` and pulling there is the deploy; restart the changed
-services with `sudo systemctl restart seedbox-<name>`.
-
-## Architecture: three layers, keep them separate
-
-- `server.py`: FastMCP tool registration ONLY. Docstrings here are the model-facing tool
-  contract (router rules like "tmdb_id must come from a media_search candidate, never
-  recall or construct one"); treat them with the same care as user-facing copy, not as
-  internal comments.
-- `tools/`: actual tool logic: business rules, dry-run/confirm gating, response shaping.
-- `clients/`: thin HTTP wrappers per upstream service, no business logic.
-- `runtime.py` (`build_services()`) wires config to clients to tools. New integrations follow
-  this DI pattern, not ad-hoc instantiation inside a tool.
-- **Prefer NASDOOM's consolidated tools over raw per-service calls** for anything it already
-  unifies (queue, requests, storage-with-denominator, cross-source search), stated
-  explicitly in `config.py`. Don't reinvent a raw client call NASDOOM already consolidates.
-
-## The non-negotiable safety conventions (this is the real substance of this repo)
+## The non-negotiable safety conventions
 
 1. **Every mutating tool defaults to dry-run.** `confirm: bool = False` previews
    (`{"dry_run": True, "would_add": ...}`); only `confirm=True` executes. Delete tools
@@ -100,19 +78,3 @@ services with `sudo systemctl restart seedbox-<name>`.
   the graduation ledger or trip the real breaker. Don't skip running it because "it's just a
   script," and don't assume a passing eval run touched production state (it deliberately
   didn't).
-
-## Tech stack
-
-Python ≥3.11, `uv` for deps/lockfile, `just` for tasks (`just setup / run / test / check /
-deploy`). `fastmcp>=2` + `starlette` + `uvicorn`, `pydantic`/`pydantic-settings` for config,
-`httpx` for all HTTP, `respx` for HTTP mocking in tests, `rapidfuzz` for fuzzy search. mypy
-**strict = true** (tests excluded), ruff line-length 120. No CI workflow exists; `just
-check`/`just test` are the only gate, run them before claiming anything works. Tests tagged
-`live` (`-m live`) hit real services and are gated behind `LIVE_TESTS=1`, never on by default.
-
-## Skills to load
-
-No dedicated Python knowledge-base skill exists yet (planned, not built; see
-`~/dev/knowledge-base/INDEX.md`). Until then, verify FastMCP/Starlette/pydantic APIs against
-current docs when unsure rather than writing from memory, same principle as the Swift skills
-elsewhere in this stack.
