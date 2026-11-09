@@ -276,7 +276,13 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
             continue
         record_action(
             f"{item['_source']}_queue_action",
-            {"queue_id": queue_id, "action": "blocklist", "removeFromClient": True, "skipRedownload": True, "auto": "rejected_upgrade"},
+            {
+                "queue_id": queue_id,
+                "action": "blocklist",
+                "removeFromClient": True,
+                "skipRedownload": True,
+                "auto": "rejected_upgrade",
+            },
             dry_run=False,
             outcome="ok",
         )
