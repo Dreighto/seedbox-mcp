@@ -67,16 +67,31 @@ def _library_already_has_file(item: dict[str, Any]) -> bool:
     """True only when the queue record itself says the episode or movie
     already has a file. A missing flag is not a yes: an ID-matched download
     for a missing episode still needs a person."""
+    episodes = item.get("episodes")
+    if isinstance(episodes, list) and episodes:
+        return all(isinstance(ep, dict) and ep.get("hasFile") is True for ep in episodes)
     for key in ("episode", "movie"):
         record = item.get(key)
         if isinstance(record, dict) and record.get("hasFile") is True:
             return True
-    episodes = item.get("episodes")
-    return (
-        isinstance(episodes, list)
-        and bool(episodes)
-        and all(isinstance(ep, dict) and ep.get("hasFile") is True for ep in episodes)
-    )
+    return False
+
+
+def _is_library_leftover(item: dict[str, Any]) -> bool:
+    """Every message must be a refusal we can act on. One other import problem
+    in the same record means part of the release may still be needed."""
+    messages = [str(item.get("errorMessage") or "").lower()]
+    for sm in item.get("statusMessages") or []:
+        if isinstance(sm, dict):
+            messages.extend(str(m).lower() for m in (sm.get("messages") or []))
+    messages = [m for m in messages if m]
+    id_match = 0
+    for message in messages:
+        if "matched to series by id" in message or "matched to movie by id" in message:
+            id_match += 1
+        elif "not a custom format upgrade" not in message and "not an upgrade for existing" not in message:
+            return False
+    return bool(messages) and (id_match == 0 or _library_already_has_file(item))
 
 
 def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
@@ -112,9 +127,7 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
         # or it refused an automatic import of a release it only recognized by
         # grab id while the episode is already on disk. Re-downloading grabs
         # the same leftover. Drop it and keep the library file.
-        upgrade_rejected = "not a custom format upgrade" in msg or "not an upgrade for existing" in msg
-        id_match_leftover = "matched to series by id" in msg or "matched to movie by id" in msg
-        if upgrade_rejected or (id_match_leftover and _library_already_has_file(item)):
+        if _is_library_leftover(item):
             return "rejected_upgrade", "library already has the file"
         return "import_issue", f"stuck importing ({state or status or 'import error'})"
 
@@ -172,7 +185,22 @@ def update_strikes(
         new_state[key] = entry
         if strikes >= STRIKE_THRESHOLD:
             to_act.append({**item, "_reason": reason, "_strikes": strikes})
-    return new_state, to_act, import_issues, rejected_upgrades
+
+    # Sonarr lists a pack as one record per episode, and deleting any record
+    # removes the shared download, so every record must be safe to discard.
+    needed = {
+        _key(i.get("_source", ""), i)
+        for i in items
+        if classify_queue_item(i)[0] != "rejected_upgrade"
+    }
+    droppable: dict[str | None, dict[str, Any]] = {}
+    for item in rejected_upgrades:
+        key = _key(item.get("_source", ""), item)
+        if key in needed:
+            import_issues.append({**item, "_reason": "stuck importing (other files in this release are still needed)"})
+        else:
+            droppable.setdefault(key, item)
+    return new_state, to_act, import_issues, list(droppable.values())
 
 
 def _load_strikes() -> dict[str, dict[str, Any]]:
@@ -264,6 +292,7 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
     # this cycle stays a rejected upgrade, so the next cycle continues it
     # instead of paging the operator for a count that is already going down.
     dropped: list[str] = []
+    not_dropped: list[str] = []
     for item in rejected:
         if rate_limit_exceeded():
             logger.warning("strike check hit rate limit; deferring remaining rejected upgrades")
@@ -275,6 +304,7 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
             await client.delete(f"/api/v3/queue/{queue_id}", params)
         except Exception:
             logger.exception("failed to remove rejected upgrade %s", queue_id)
+            not_dropped.append(f'"{item["_title"]}"')
             continue
         record_action(
             f"{item['_source']}_queue_action",
@@ -304,6 +334,12 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
             "Auto-fixed rejected upgrades (removed, blocklisted, kept the library file): "
             + "; ".join(dropped)
             + "."
+        )
+    if not_dropped:
+        notes.append(
+            "Could not remove rejected upgrades from the queue (NOT auto-fixed, retrying next cycle): "
+            + "; ".join(not_dropped)
+            + ". Worth a look."
         )
     if import_issues:
         titles = "; ".join(f'"{i["_title"]}" ({i["_reason"]})' for i in import_issues[:5])

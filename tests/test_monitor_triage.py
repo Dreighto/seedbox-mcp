@@ -1,5 +1,5 @@
-from seedbox_mcp.monitor import _notes_to_findings
-from seedbox_mcp.triage import fingerprint
+from seedbox_mcp.monitor import _notes_to_findings, _repeats_checker
+from seedbox_mcp.triage import Finding, fingerprint
 
 
 def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
@@ -82,3 +82,18 @@ def test_jellyseerr_scan_check_flags_stale_or_missing_libraries():
     assert f.title == "Jellyseerr hasn't finished a Plex scan in over 2 hours (Movies)"
 
     assert "no Plex libraries switched on" in jellyseerr_scan_note({"libraries": []}, now)
+
+
+def _model_finding(title: str) -> Finding:
+    return Finding(id="m", severity="needs_fix", title=title, real=True, reason=title, fixable_by="agent")
+
+
+def test_a_cached_copy_of_a_current_checker_finding_is_dropped():
+    checker = _notes_to_findings("2 download(s) stuck on import (NOT auto-fixed). Worth a look.")
+    assert _repeats_checker(_model_finding("Import holds in Sonarr"), checker)
+
+
+def test_a_cached_model_finding_survives_when_the_checker_has_not_reported_it():
+    assert not _repeats_checker(_model_finding("SABnzbd authentication is failing"), [])
+    assert not _repeats_checker(_model_finding("Import permission failure on /tv"), [])
+    assert not _repeats_checker(_model_finding("Dispatch listener is down"), [])

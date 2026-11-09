@@ -326,3 +326,64 @@ async def test_rejected_upgrade_is_removed_without_a_new_search(
     assert path == "/api/v3/queue/88"
     assert params == {"removeFromClient": "true", "blocklist": "true", "skipRedownload": "true"}
     assert note is not None and "rejected upgrades" in note and "stuck" not in note.lower()
+
+
+def _pack_record(queue_id: int, message: str) -> dict[str, Any]:
+    return {
+        "id": queue_id,
+        "_source": "sonarr",
+        "_title": "Show",
+        "downloadId": "pack",
+        "trackedDownloadState": "importPending",
+        "status": "completed",
+        "statusMessages": [{"title": "release", "messages": [message]}],
+    }
+
+
+def test_a_release_with_one_needed_episode_is_not_dropped() -> None:
+    items = [
+        _pack_record(1, "Not an upgrade for existing episode file(s)."),
+        _pack_record(2, "Permission denied writing the episode file."),
+    ]
+    _, _, issues, rejected = update_strikes({}, items, 1.0)
+    assert rejected == []
+    assert {i["id"] for i in issues} == {1, 2}
+
+
+def test_a_fully_rejected_pack_is_deleted_once() -> None:
+    items = [_pack_record(i, "Not an upgrade for existing episode file(s).") for i in (1, 2)]
+    _, _, issues, rejected = update_strikes({}, items, 1.0)
+    assert issues == []
+    assert [r["id"] for r in rejected] == [1]
+
+
+def test_a_rejection_beside_another_import_problem_stays_an_import_issue() -> None:
+    item = _pack_record(1, "Not an upgrade for existing episode file(s).")
+    item["statusMessages"].append({"title": "other", "messages": ["Permission denied."]})
+    assert classify_queue_item(item)[0] == "import_issue"
+
+
+def test_id_match_with_a_singular_file_but_a_missing_episode_stays_an_import_issue() -> None:
+    item = _pack_record(1, "release was matched to series by ID.")
+    item["episode"] = {"hasFile": True}
+    item["episodes"] = [{"hasFile": True}, {"hasFile": False}]
+    assert classify_queue_item(item)[0] == "import_issue"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_removal_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    raw = _pack_record(5, "Not an upgrade for existing episode file(s).")
+    raw["title"] = "Show.S01E01"
+    fake = _FakeArr([raw])
+
+    async def failing_delete(path: str, params: dict[str, str]) -> None:
+        raise OSError("arr is down")
+
+    fake.delete = failing_delete  # type: ignore[method-assign]
+    monkeypatch.setattr(download_strikes, "build_services", lambda settings: _FakeServices(fake))
+    monkeypatch.setattr(download_strikes, "rate_limit_exceeded", lambda: False)
+    monkeypatch.setattr(download_strikes, "record_action", lambda *a, **k: None)
+    monkeypatch.setattr(download_strikes, "STRIKE_STATE_PATH", tmp_path / "strikes.json")
+
+    note = await run_download_strike_check(settings=None, now_ts=1.0)
+    assert note is not None and "could not remove" in note.lower() and "worth a look" in note.lower()

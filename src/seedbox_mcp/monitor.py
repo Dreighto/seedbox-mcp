@@ -480,16 +480,13 @@ _FIX_MARKERS = (
 # model, because the model restates them with a new key and that re-pages.
 _CHECKER_DECIDED_KEYS = frozenset({"import-holds", "sab-history-window"})
 
-# The model copies these into its own findings. The checker runs every cycle,
-# so a cached copy is either a duplicate or already stale.
-_CHECKER_RESTATEMENT_MARKERS = (
-    "import",
-    "sabnzbd",
-    "download history",
-    "escalation to worker",
-    "dispatch listener",
-    "match problem",
-)
+# The model copies these into its own findings. While the checker is reporting
+# the same thing, a cached copy is a duplicate. Without a current checker
+# finding it may be the only report of a real problem, so it stays.
+_CHECKER_RESTATEMENT_MARKERS = {
+    "import-holds": ("import", "match problem"),
+    "sab-history-window": ("download history", "sabnzbd history"),
+}
 
 
 def _checker_key(line: str) -> str:
@@ -501,9 +498,13 @@ def _checker_key(line: str) -> str:
     return ""
 
 
-def _repeats_checker(finding: Finding) -> bool:
+def _repeats_checker(finding: Finding, checker_findings: list[Finding]) -> bool:
     blob = f"{finding.key} {finding.title} {finding.reason}".lower()
-    return any(marker in blob for marker in _CHECKER_RESTATEMENT_MARKERS)
+    current = {f.issue_key for f in checker_findings}
+    return any(
+        key in current and any(marker in blob for marker in markers)
+        for key, markers in _CHECKER_RESTATEMENT_MARKERS.items()
+    )
 
 
 def dispatch_listener_up(url: str) -> bool:
@@ -726,7 +727,9 @@ async def run_monitor_cycle(
         )
         if not needs_judgment and last_run_ts > 0 and 0 <= model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
             logger.info("monitor: model checks skipped; next routine run is due after 2 hours")
-            return deterministic_findings + [f for f in cached_findings if not _repeats_checker(f)]
+            return deterministic_findings + [
+                f for f in cached_findings if not _repeats_checker(f, deterministic_findings)
+            ]
         # Failed attempts consume model requests too; keep the last findings
         # until a successful turn replaces them, without retrying every cycle.
         _save_model_state(model_run_ts, cached_findings)
@@ -779,7 +782,11 @@ async def run_monitor_cycle(
         if read_only:
             raise
         logger.exception("monitor model turn failed; retaining previous findings")
-        retained = {finding.issue_key: finding for finding in cached_findings if not _repeats_checker(finding)}
+        retained = {
+            finding.issue_key: finding
+            for finding in cached_findings
+            if not _repeats_checker(finding, deterministic_findings)
+        }
         retained.update({finding.issue_key: finding for finding in _notes_to_findings(model_liveness_note)})
         failed_check = Finding(
             id="monitor-model-check-failed",
