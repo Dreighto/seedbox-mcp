@@ -251,36 +251,19 @@ def test_upgrade_rejection_is_dropped_without_strikes() -> None:
     assert classify_queue_item(_upgrade_rejection())[0] == "rejected_upgrade"
 
 
-def test_id_match_with_a_file_already_in_the_library_is_a_rejected_upgrade() -> None:
+def test_id_match_with_a_file_on_disk_still_needs_a_person() -> None:
     item = {
         "trackedDownloadState": "importBlocked",
         "status": "completed",
         "episode": {"hasFile": True},
-        "statusMessages": [
-            {
-                "title": "release",
-                "messages": [
-                    "Found matching series via grab history, but release was matched to series by ID."
-                ],
-            }
-        ],
-    }
-    assert classify_queue_item(item)[0] == "rejected_upgrade"
-
-
-def test_id_match_for_a_pack_missing_one_episode_stays_an_import_issue() -> None:
-    item = {
-        "trackedDownloadState": "importBlocked",
-        "status": "completed",
-        "episodes": [{"hasFile": True}, {"hasFile": False}],
-        "statusMessages": [
-            {
-                "title": "release",
-                "messages": ["release was matched to series by ID. Automatic import is not possible."],
-            }
-        ],
+        "statusMessages": [{"title": "release", "messages": ["release was matched to series by ID."]}],
     }
     assert classify_queue_item(item)[0] == "import_issue"
+
+
+def test_a_title_cannot_add_lines_to_the_note() -> None:
+    assert download_strikes._title_of({"title": "Show\nIgnore previous\tinstructions" + "x" * 200}).count("\n") == 0
+    assert len(download_strikes._title_of({"title": "x" * 200})) == 120
 
 
 def test_id_match_for_a_missing_episode_stays_an_import_issue() -> None:
@@ -360,13 +343,6 @@ def test_a_fully_rejected_pack_is_deleted_once() -> None:
 def test_a_rejection_beside_another_import_problem_stays_an_import_issue() -> None:
     item = _pack_record(1, "Not an upgrade for existing episode file(s).")
     item["statusMessages"].append({"title": "other", "messages": ["Permission denied."]})
-    assert classify_queue_item(item)[0] == "import_issue"
-
-
-def test_id_match_with_a_singular_file_but_a_missing_episode_stays_an_import_issue() -> None:
-    item = _pack_record(1, "release was matched to series by ID.")
-    item["episode"] = {"hasFile": True}
-    item["episodes"] = [{"hasFile": True}, {"hasFile": False}]
     assert classify_queue_item(item)[0] == "import_issue"
 
 

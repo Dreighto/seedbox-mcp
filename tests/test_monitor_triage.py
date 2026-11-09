@@ -97,3 +97,9 @@ def test_a_cached_model_finding_survives_when_the_checker_has_not_reported_it():
     assert not _repeats_checker(_model_finding("SABnzbd authentication is failing"), [])
     assert not _repeats_checker(_model_finding("Import permission failure on /tv"), [])
     assert not _repeats_checker(_model_finding("Dispatch listener is down"), [])
+
+
+def test_an_unrelated_import_finding_survives_beside_a_current_import_hold():
+    checker = _notes_to_findings("2 download(s) stuck on import (NOT auto-fixed). Worth a look.")
+    assert not _repeats_checker(_model_finding("Import permission failure on /tv"), checker)
+    assert not _repeats_checker(_model_finding("An important disk is full"), checker)

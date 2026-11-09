@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -9,6 +10,7 @@ from seedbox_mcp.monitor import (
     MONITOR_ESCALATION_TOOLS,
     MONITOR_READ_ONLY_TOOLS,
     MonitorSettings,
+    _dispatch_reachable,
     dispatch_listener_up,
     run_monitor_cycle,
 )
@@ -94,3 +96,12 @@ async def test_scheduled_cycle_does_not_offer_escalation_when_dispatch_is_down()
 @pytest.mark.parametrize("url", ["http://[bad", "http://localhost:notaport"])
 def test_a_malformed_dispatch_url_counts_as_down(url: str) -> None:
     assert dispatch_listener_up(url) is False
+
+
+@pytest.mark.asyncio
+async def test_a_hung_dispatch_lookup_counts_as_down() -> None:
+    with (
+        patch(f"{_MOD}.dispatch_listener_up", side_effect=lambda url: time.sleep(0.2)),
+        patch(f"{_MOD}._DISPATCH_CHECK_TIMEOUT_S", 0.01),
+    ):
+        assert await _dispatch_reachable("http://example.invalid") is False

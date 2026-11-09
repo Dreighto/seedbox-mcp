@@ -167,7 +167,8 @@ almost never a permissions or path issue. If nasdoom_queue shows \
 importblocked / importPending items, call nas_import_diagnosis BEFORE \
 flagging or escalating. Trust that tool's diagnosis field:
 - not_an_upgrade (including Sonarr's "Not a Custom Format upgrade"): the \
-library already has an equal or better file. The checker removes it. This \
+library already has an equal or better file. The checker handles it and \
+reports anything it could not remove. This \
 is healthy. Do not page the operator, do not say permissions, do not \
 escalate_to_worker.
 - awaiting_metadata: Sonarr is holding an anime episode that aired within \
@@ -484,7 +485,7 @@ _CHECKER_DECIDED_KEYS = frozenset({"import-holds", "sab-history-window"})
 # the same thing, a cached copy is a duplicate. Without a current checker
 # finding it may be the only report of a real problem, so it stays.
 _CHECKER_RESTATEMENT_MARKERS = {
-    "import-holds": ("import", "match problem"),
+    "import-holds": ("import hold", "stuck on import", "stuck importing", "import-holds", "match problem"),
     "sab-history-window": ("download history", "sabnzbd history"),
 }
 
@@ -517,6 +518,17 @@ def dispatch_listener_up(url: str) -> bool:
         with socket.create_connection((host, port), timeout=1):
             return True
     except (OSError, ValueError):
+        return False
+
+
+_DISPATCH_CHECK_TIMEOUT_S = 3.0
+
+
+async def _dispatch_reachable(url: str) -> bool:
+    # A hung DNS lookup ignores the socket timeout and would stall the cycle.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(dispatch_listener_up, url), timeout=_DISPATCH_CHECK_TIMEOUT_S)
+    except TimeoutError:
         return False
 
 
@@ -750,7 +762,7 @@ async def run_monitor_cycle(
     # (or didn't) differs.
     task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
     escalation_tools = set() if read_only else set(MONITOR_ESCALATION_TOOLS)
-    if escalation_tools and not dispatch_listener_up(settings.dispatch_listener_url):
+    if escalation_tools and not await _dispatch_reachable(settings.dispatch_listener_url):
         escalation_tools = set()
         task += (
             "\n\nWorker dispatch is not reachable. Do not try to escalate. "

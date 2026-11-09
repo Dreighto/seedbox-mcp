@@ -63,35 +63,17 @@ def _messages_text(item: dict[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
-def _library_already_has_file(item: dict[str, Any]) -> bool:
-    """True only when the queue record itself says the episode or movie
-    already has a file. A missing flag is not a yes: an ID-matched download
-    for a missing episode still needs a person."""
-    episodes = item.get("episodes")
-    if isinstance(episodes, list) and episodes:
-        return all(isinstance(ep, dict) and ep.get("hasFile") is True for ep in episodes)
-    for key in ("episode", "movie"):
-        record = item.get(key)
-        if isinstance(record, dict) and record.get("hasFile") is True:
-            return True
-    return False
-
-
 def _is_library_leftover(item: dict[str, Any]) -> bool:
-    """Every message must be a refusal we can act on. One other import problem
+    """Every message must be the arr's own refusal. One other import problem
     in the same record means part of the release may still be needed."""
     messages = [str(item.get("errorMessage") or "").lower()]
     for sm in item.get("statusMessages") or []:
         if isinstance(sm, dict):
             messages.extend(str(m).lower() for m in (sm.get("messages") or []))
     messages = [m for m in messages if m]
-    id_match = 0
-    for message in messages:
-        if "matched to series by id" in message or "matched to movie by id" in message:
-            id_match += 1
-        elif "not a custom format upgrade" not in message and "not an upgrade for existing" not in message:
-            return False
-    return bool(messages) and (id_match == 0 or _library_already_has_file(item))
+    return bool(messages) and all(
+        "not a custom format upgrade" in m or "not an upgrade for existing" in m for m in messages
+    )
 
 
 def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
@@ -123,10 +105,8 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
     if "absolute episode number" in msg and "recently aired" in msg:
         return None, ""
     if is_import_state or any(m in msg for m in _IMPORT_MARKERS):
-        # Sonarr already compared this copy to the library file and refused it,
-        # or it refused an automatic import of a release it only recognized by
-        # grab id while the episode is already on disk. Re-downloading grabs
-        # the same leftover. Drop it and keep the library file.
+        # Sonarr already compared this copy to the library file and refused it.
+        # Re-downloading grabs the same leftover. Drop it and keep the library file.
         if _is_library_leftover(item):
             return "rejected_upgrade", "library already has the file"
         return "import_issue", f"stuck importing ({state or status or 'import error'})"
@@ -224,7 +204,9 @@ def _save_strikes(state: dict[str, dict[str, Any]]) -> None:
 def _title_of(item: dict[str, Any]) -> str:
     movie = item.get("movie") or {}
     series = item.get("series") or {}
-    return movie.get("title") or series.get("title") or item.get("title") or "unknown"
+    title = movie.get("title") or series.get("title") or item.get("title") or "unknown"
+    # Indexer-supplied, and it ends up in one-finding-per-line notes the model reads.
+    return " ".join(str(title).split())[:120]
 
 
 async def _fetch_queue(client: Any, source: str) -> list[dict[str, Any]]:
