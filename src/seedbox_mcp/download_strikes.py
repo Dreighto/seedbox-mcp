@@ -72,8 +72,10 @@ def _library_already_has_file(item: dict[str, Any]) -> bool:
         if isinstance(record, dict) and record.get("hasFile") is True:
             return True
     episodes = item.get("episodes")
-    return isinstance(episodes, list) and any(
-        isinstance(ep, dict) and ep.get("hasFile") is True for ep in episodes
+    return (
+        isinstance(episodes, list)
+        and bool(episodes)
+        and all(isinstance(ep, dict) and ep.get("hasFile") is True for ep in episodes)
     )
 
 

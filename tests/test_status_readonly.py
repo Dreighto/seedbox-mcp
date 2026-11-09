@@ -5,6 +5,7 @@ import pytest
 
 from seedbox_mcp.config import Settings
 from seedbox_mcp.monitor import (
+    dispatch_listener_up,
     MONITOR_ACTION_TOOLS,
     MONITOR_ESCALATION_TOOLS,
     MONITOR_READ_ONLY_TOOLS,
@@ -88,3 +89,8 @@ async def test_scheduled_cycle_does_not_offer_escalation_when_dispatch_is_down()
     _args, kwargs = agent_mock.call_args
     assert kwargs["escalation_tools"] == set()
     assert "Worker dispatch is not reachable" in agent_mock.call_args.args[0]
+
+
+@pytest.mark.parametrize("url", ["http://[bad", "http://localhost:notaport"])
+def test_a_malformed_dispatch_url_counts_as_down(url: str) -> None:
+    assert dispatch_listener_up(url) is False

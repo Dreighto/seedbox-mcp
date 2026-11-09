@@ -507,15 +507,15 @@ def _repeats_checker(finding: Finding) -> bool:
 
 
 def dispatch_listener_up(url: str) -> bool:
-    parsed = urlparse(url)
-    host = parsed.hostname
-    if not host:
-        return False
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
     try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
         with socket.create_connection((host, port), timeout=1):
             return True
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
