@@ -5,11 +5,11 @@ import pytest
 
 from seedbox_mcp.config import Settings
 from seedbox_mcp.monitor import (
-    dispatch_listener_up,
     MONITOR_ACTION_TOOLS,
     MONITOR_ESCALATION_TOOLS,
     MONITOR_READ_ONLY_TOOLS,
     MonitorSettings,
+    dispatch_listener_up,
     run_monitor_cycle,
 )
 
