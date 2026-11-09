@@ -1,5 +1,5 @@
-from seedbox_mcp.monitor import _notes_to_findings
-from seedbox_mcp.triage import fingerprint
+from seedbox_mcp.monitor import _notes_to_findings, _repeats_checker
+from seedbox_mcp.triage import Finding, fingerprint
 
 
 def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
@@ -19,7 +19,10 @@ def test_bundled_fix_and_unresolved_report_splits_into_two_findings():
 
     assert stuck.auto_fixed is False
     assert stuck.severity == "needs_fix"
+    assert stuck.issue_key == "import-holds"
     assert fingerprint([stuck]) is not None
+    grown = _notes_to_findings(note.replace("2 download(s)", "54 download(s)", 1))
+    assert fingerprint([grown[1]]) == fingerprint([stuck])
 
 
 def test_queue_resume_note_becomes_autofixed_watch():
@@ -48,7 +51,10 @@ def test_sabnzbd_advisory_note_becomes_needs_fix_and_pushes():
     f = out[0]
     assert f.severity == "needs_fix"
     assert f.auto_fixed is False
+    assert f.issue_key == "sab-history-window"
     assert fingerprint([f]) is not None
+    other = _notes_to_findings("SABnzbd download history has grown to 61 items, approaching the 60-item window.")
+    assert fingerprint(other) == fingerprint([f])
 
 
 def test_notes_empty_gives_no_findings():
@@ -76,3 +82,24 @@ def test_jellyseerr_scan_check_flags_stale_or_missing_libraries():
     assert f.title == "Jellyseerr hasn't finished a Plex scan in over 2 hours (Movies)"
 
     assert "no Plex libraries switched on" in jellyseerr_scan_note({"libraries": []}, now)
+
+
+def _model_finding(title: str) -> Finding:
+    return Finding(id="m", severity="needs_fix", title=title, real=True, reason=title, fixable_by="agent")
+
+
+def test_a_cached_copy_of_a_current_checker_finding_is_dropped():
+    checker = _notes_to_findings("2 download(s) stuck on import (NOT auto-fixed). Worth a look.")
+    assert _repeats_checker(_model_finding("Import holds in Sonarr"), checker)
+
+
+def test_a_cached_model_finding_survives_when_the_checker_has_not_reported_it():
+    assert not _repeats_checker(_model_finding("SABnzbd authentication is failing"), [])
+    assert not _repeats_checker(_model_finding("Import permission failure on /tv"), [])
+    assert not _repeats_checker(_model_finding("Dispatch listener is down"), [])
+
+
+def test_an_unrelated_import_finding_survives_beside_a_current_import_hold():
+    checker = _notes_to_findings("2 download(s) stuck on import (NOT auto-fixed). Worth a look.")
+    assert not _repeats_checker(_model_finding("Import permission failure on /tv"), checker)
+    assert not _repeats_checker(_model_finding("An important disk is full"), checker)

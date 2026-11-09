@@ -6,10 +6,12 @@ import html
 import json
 import logging
 import math
+import socket
 import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastmcp import Client
 
@@ -165,8 +167,10 @@ almost never a permissions or path issue. If nasdoom_queue shows \
 importblocked / importPending items, call nas_import_diagnosis BEFORE \
 flagging or escalating. Trust that tool's diagnosis field:
 - not_an_upgrade (including Sonarr's "Not a Custom Format upgrade"): the \
-library already has an equal or better file. This is healthy. Do not page \
-the operator, do not say permissions, do not escalate_to_worker.
+library already has an equal or better file. The checker handles it and \
+reports anything it could not remove. This \
+is healthy. Do not page the operator, do not say permissions, do not \
+escalate_to_worker.
 - awaiting_metadata: Sonarr is holding an anime episode that aired within \
 the last day because TVDB has no absolute episode number for it yet. It \
 imports on its own. Healthy; do not page, do not say permissions, do not \
@@ -469,7 +473,63 @@ _FIX_MARKERS = (
     "verified",
     "auto-corrected bad imports",
     "added a permanent",
+    "auto-fixed rejected upgrades",
 )
+
+
+# These two notes are already decided. A changing count must not wake the
+# model, because the model restates them with a new key and that re-pages.
+_CHECKER_DECIDED_KEYS = frozenset({"import-holds", "sab-history-window"})
+
+# The model copies these into its own findings. While the checker is reporting
+# the same thing, a cached copy is a duplicate. Without a current checker
+# finding it may be the only report of a real problem, so it stays.
+_CHECKER_RESTATEMENT_MARKERS = {
+    "import-holds": ("import hold", "stuck on import", "stuck importing", "import-holds", "match problem"),
+    "sab-history-window": ("download history", "sabnzbd history"),
+}
+
+
+def _checker_key(line: str) -> str:
+    lowered = line.lower()
+    if "stuck on import" in lowered:
+        return "import-holds"
+    if "download history has grown" in lowered:
+        return "sab-history-window"
+    return ""
+
+
+def _repeats_checker(finding: Finding, checker_findings: list[Finding]) -> bool:
+    blob = f"{finding.key} {finding.title} {finding.reason}".lower()
+    current = {f.issue_key for f in checker_findings}
+    return any(
+        key in current and any(marker in blob for marker in markers)
+        for key, markers in _CHECKER_RESTATEMENT_MARKERS.items()
+    )
+
+
+def dispatch_listener_up(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=1):
+            return True
+    except (OSError, ValueError):
+        return False
+
+
+_DISPATCH_CHECK_TIMEOUT_S = 3.0
+
+
+async def _dispatch_reachable(url: str) -> bool:
+    # A hung DNS lookup ignores the socket timeout and would stall the cycle.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(dispatch_listener_up, url), timeout=_DISPATCH_CHECK_TIMEOUT_S)
+    except TimeoutError:
+        return False
 
 
 def _finding_title(line: str) -> str:
@@ -513,6 +573,7 @@ def _notes_to_findings(*notes: str | None) -> list[Finding]:
                         reason=stripped,
                         fixable_by="proven",
                         auto_fixed=True,
+                        key=_checker_key(stripped),
                     )
                 )
             else:
@@ -526,6 +587,7 @@ def _notes_to_findings(*notes: str | None) -> list[Finding]:
                         recommendation="look into it",
                         fixable_by="agent",
                         auto_fixed=False,
+                        key=_checker_key(stripped),
                     )
                 )
     return out
@@ -672,10 +734,14 @@ async def run_monitor_cycle(
     model_run_ts = time.time()
     if not read_only:
         last_run_ts, cached_findings = _load_model_state()
-        needs_judgment = any(f.real and not f.auto_fixed for f in deterministic_findings)
+        needs_judgment = any(
+            f.real and not f.auto_fixed and f.issue_key not in _CHECKER_DECIDED_KEYS for f in deterministic_findings
+        )
         if not needs_judgment and last_run_ts > 0 and 0 <= model_run_ts - last_run_ts < MODEL_RUN_INTERVAL_S:
             logger.info("monitor: model checks skipped; next routine run is due after 2 hours")
-            return deterministic_findings + cached_findings
+            return deterministic_findings + [
+                f for f in cached_findings if not _repeats_checker(f, deterministic_findings)
+            ]
         # Failed attempts consume model requests too; keep the last findings
         # until a successful turn replaces them, without retrying every cycle.
         _save_model_state(model_run_ts, cached_findings)
@@ -695,6 +761,13 @@ async def run_monitor_cycle(
     # between the two — only the preamble describing what already happened
     # (or didn't) differs.
     task = _READ_ONLY_PREAMBLE if read_only else _ACTING_PREAMBLE
+    escalation_tools = set() if read_only else set(MONITOR_ESCALATION_TOOLS)
+    if escalation_tools and not await _dispatch_reachable(settings.dispatch_listener_url):
+        escalation_tools = set()
+        task += (
+            "\n\nWorker dispatch is not reachable. Do not try to escalate. "
+            "Report the underlying problem."
+        )
     if deterministic_findings:
         task += "\n\nDeterministic check results:\n" + "\n".join(f.reason for f in deterministic_findings)
     try:
@@ -705,9 +778,9 @@ async def run_monitor_cycle(
             model=model or settings.ollama_monitor_model,
             allowed_tools=MONITOR_READ_ONLY_TOOLS
             if read_only
-            else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | MONITOR_ESCALATION_TOOLS,
+            else MONITOR_READ_ONLY_TOOLS | MONITOR_ACTION_TOOLS | escalation_tools,
             action_tools=set() if read_only else MONITOR_ACTION_TOOLS,
-            escalation_tools=set() if read_only else MONITOR_ESCALATION_TOOLS,
+            escalation_tools=escalation_tools,
             ollama_url=settings.ollama_url,
             # Six independent signals to check in one turn, each a real chance
             # to consume a round on a hallucinated-then-retried kwarg (an
@@ -721,7 +794,11 @@ async def run_monitor_cycle(
         if read_only:
             raise
         logger.exception("monitor model turn failed; retaining previous findings")
-        retained = {finding.issue_key: finding for finding in cached_findings}
+        retained = {
+            finding.issue_key: finding
+            for finding in cached_findings
+            if not _repeats_checker(finding, deterministic_findings)
+        }
         retained.update({finding.issue_key: finding for finding in _notes_to_findings(model_liveness_note)})
         failed_check = Finding(
             id="monitor-model-check-failed",

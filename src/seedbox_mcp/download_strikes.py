@@ -63,11 +63,26 @@ def _messages_text(item: dict[str, Any]) -> str:
     return " ".join(parts).lower()
 
 
+def _is_library_leftover(item: dict[str, Any]) -> bool:
+    """Every message must be the arr's own refusal. One other import problem
+    in the same record means part of the release may still be needed."""
+    messages = [str(item.get("errorMessage") or "").lower()]
+    for sm in item.get("statusMessages") or []:
+        if isinstance(sm, dict):
+            messages.extend(str(m).lower() for m in (sm.get("messages") or []))
+    messages = [m for m in messages if m]
+    return bool(messages) and all(
+        "not a custom format upgrade" in m or "not an upgrade for existing" in m for m in messages
+    )
+
+
 def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
     """Returns (category, reason).
 
     category:
       'stalled': dead download, safe to remove+blocklist+re-search
+      'rejected_upgrade': the library already has the file. Remove and
+                          blocklist, and do not search again.
       'import_issue': stuck importing; report only, never auto-blocklist,
                       because re-downloading won't clear an import hold
                       (the arr's own reason decides; nas_import_diagnosis
@@ -90,6 +105,10 @@ def classify_queue_item(item: dict[str, Any]) -> tuple[str | None, str]:
     if "absolute episode number" in msg and "recently aired" in msg:
         return None, ""
     if is_import_state or any(m in msg for m in _IMPORT_MARKERS):
+        # Sonarr already compared this copy to the library file and refused it.
+        # Re-downloading grabs the same leftover. Drop it and keep the library file.
+        if _is_library_leftover(item):
+            return "rejected_upgrade", "library already has the file"
         return "import_issue", f"stuck importing ({state or status or 'import error'})"
 
     if status in ("warning", "failed", "stalled") or tstatus in ("warning", "error"):
@@ -107,23 +126,28 @@ def update_strikes(
     prev: dict[str, dict[str, Any]],
     items: list[dict[str, Any]],
     now_ts: float,
-) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     """Pure strike-state transition. Given the previous strike state and the
     current queue snapshot, returns:
-      (new_state, to_act, import_issues)
+      (new_state, to_act, import_issues, rejected_upgrades)
     - to_act: stalled items that just reached STRIKE_THRESHOLD (act on these)
     - import_issues: items stuck importing (report only, not struck/acted)
+    - rejected_upgrades: leftovers the library already beat (drop this cycle)
     Healthy items and items that left the queue are dropped from state, so a
     download that recovers loses its accrued strikes rather than carrying
     them forever."""
     new_state: dict[str, dict[str, Any]] = {}
     to_act: list[dict[str, Any]] = []
     import_issues: list[dict[str, Any]] = []
+    rejected_upgrades: list[dict[str, Any]] = []
     for item in items:
         key = _key(item.get("_source", ""), item)
         if not key:
             continue
         category, reason = classify_queue_item(item)
+        if category == "rejected_upgrade":
+            rejected_upgrades.append({**item, "_reason": reason})
+            continue
         if category == "import_issue":
             import_issues.append({**item, "_reason": reason})
             continue
@@ -141,7 +165,22 @@ def update_strikes(
         new_state[key] = entry
         if strikes >= STRIKE_THRESHOLD:
             to_act.append({**item, "_reason": reason, "_strikes": strikes})
-    return new_state, to_act, import_issues
+
+    # Sonarr lists a pack as one record per episode, and deleting any record
+    # removes the shared download, so every record must be safe to discard.
+    needed = {
+        _key(i.get("_source", ""), i)
+        for i in items
+        if classify_queue_item(i)[0] != "rejected_upgrade"
+    }
+    droppable: dict[str | None, dict[str, Any]] = {}
+    for item in rejected_upgrades:
+        key = _key(item.get("_source", ""), item)
+        if key in needed:
+            import_issues.append({**item, "_reason": "stuck importing (other files in this release are still needed)"})
+        else:
+            droppable.setdefault(key, item)
+    return new_state, to_act, import_issues, list(droppable.values())
 
 
 def _load_strikes() -> dict[str, dict[str, Any]]:
@@ -165,7 +204,9 @@ def _save_strikes(state: dict[str, dict[str, Any]]) -> None:
 def _title_of(item: dict[str, Any]) -> str:
     movie = item.get("movie") or {}
     series = item.get("series") or {}
-    return movie.get("title") or series.get("title") or item.get("title") or "unknown"
+    title = movie.get("title") or series.get("title") or item.get("title") or "unknown"
+    # Indexer-supplied, and it ends up in one-finding-per-line notes the model reads.
+    return " ".join(str(title).split())[:120]
 
 
 async def _fetch_queue(client: Any, source: str) -> list[dict[str, Any]]:
@@ -202,7 +243,7 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
             logger.exception("failed to fetch %s queue for strike check", source)
 
     prev = _load_strikes()
-    new_state, to_act, import_issues = update_strikes(prev, items, now_ts)
+    new_state, to_act, import_issues, rejected = update_strikes(prev, items, now_ts)
 
     acted: list[str] = []
     for item in to_act:
@@ -229,6 +270,39 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
         acted.append(f'"{item["_title"]}" ({item["_reason"]}, {item["_strikes"]} strikes)')
         logger.info("strike check removed+blocklisted stalled download: %s", item["_title"])
 
+    # One delete per item, same hourly cap as stalls. Whatever doesn't fit
+    # this cycle stays a rejected upgrade, so the next cycle continues it
+    # instead of paging the operator for a count that is already going down.
+    dropped: list[str] = []
+    not_dropped: list[str] = []
+    for item in rejected:
+        if rate_limit_exceeded():
+            logger.warning("strike check hit rate limit; deferring remaining rejected upgrades")
+            break
+        client = services.radarr if item["_source"] == "radarr" else services.sonarr
+        queue_id = item.get("id")
+        params = {"removeFromClient": "true", "blocklist": "true", "skipRedownload": "true"}
+        try:
+            await client.delete(f"/api/v3/queue/{queue_id}", params)
+        except Exception:
+            logger.exception("failed to remove rejected upgrade %s", queue_id)
+            not_dropped.append(f'"{item["_title"]}"')
+            continue
+        record_action(
+            f"{item['_source']}_queue_action",
+            {
+                "queue_id": queue_id,
+                "action": "blocklist",
+                "removeFromClient": True,
+                "skipRedownload": True,
+                "auto": "rejected_upgrade",
+            },
+            dry_run=False,
+            outcome="ok",
+        )
+        dropped.append(f'"{item["_title"]}"')
+        logger.info("removed rejected upgrade, kept the library file: %s", item["_title"])
+
     _save_strikes(new_state)
 
     notes: list[str] = []
@@ -236,6 +310,18 @@ async def run_download_strike_check(settings: Settings, now_ts: float) -> str | 
         notes.append(
             "Auto-fixed stalled downloads (removed, blocklisted, re-searching) after "
             f"{STRIKE_THRESHOLD}+ cycles stalled: " + "; ".join(acted) + "."
+        )
+    if dropped:
+        notes.append(
+            "Auto-fixed rejected upgrades (removed, blocklisted, kept the library file): "
+            + "; ".join(dropped)
+            + "."
+        )
+    if not_dropped:
+        notes.append(
+            "Could not remove rejected upgrades from the queue (NOT auto-fixed, retrying next cycle): "
+            + "; ".join(not_dropped)
+            + ". Worth a look."
         )
     if import_issues:
         titles = "; ".join(f'"{i["_title"]}" ({i["_reason"]})' for i in import_issues[:5])

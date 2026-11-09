@@ -74,11 +74,11 @@ def test_strike_accrues_and_only_acts_at_threshold() -> None:
     item = _stalled()
     # Below threshold: no action across the first STRIKE_THRESHOLD-1 cycles.
     for cycle in range(1, STRIKE_THRESHOLD):
-        state, to_act, imports = update_strikes(state, [item], now_ts=float(cycle))
+        state, to_act, imports, _dropped = update_strikes(state, [item], now_ts=float(cycle))
         assert to_act == [], f"acted too early at cycle {cycle}"
         assert state["radarr:abc"]["strikes"] == cycle
     # Threshold cycle: it acts exactly once.
-    state, to_act, imports = update_strikes(state, [item], now_ts=99.0)
+    state, to_act, imports, _dropped = update_strikes(state, [item], now_ts=99.0)
     assert len(to_act) == 1
     assert to_act[0]["_strikes"] == STRIKE_THRESHOLD
 
@@ -86,13 +86,13 @@ def test_strike_accrues_and_only_acts_at_threshold() -> None:
 def test_recovered_download_loses_its_strikes() -> None:
     state: dict = {}
     stalled = _stalled()
-    state, _, _ = update_strikes(state, [stalled], now_ts=1.0)
-    state, _, _ = update_strikes(state, [stalled], now_ts=2.0)
+    state, _, _, _ = update_strikes(state, [stalled], now_ts=1.0)
+    state, _, _, _ = update_strikes(state, [stalled], now_ts=2.0)
     assert state["radarr:abc"]["strikes"] == 2
     # Next cycle the same download is healthy again → its entry is dropped,
     # strikes reset, so it can never cross the threshold from stale history.
     recovered = {**stalled, "status": "downloading", "trackedDownloadStatus": "ok", "errorMessage": ""}
-    state, to_act, _ = update_strikes(state, [recovered], now_ts=3.0)
+    state, to_act, _, _ = update_strikes(state, [recovered], now_ts=3.0)
     assert "radarr:abc" not in state
     assert to_act == []
 
@@ -101,7 +101,8 @@ def test_import_issue_is_reported_never_struck_or_acted() -> None:
     state: dict = {}
     imp = _import_stuck()
     for cycle in range(1, STRIKE_THRESHOLD + 2):
-        state, to_act, imports = update_strikes(state, [imp], now_ts=float(cycle))
+        state, to_act, imports, dropped = update_strikes(state, [imp], now_ts=float(cycle))
+        assert dropped == []
         assert to_act == [], "import issues must never be auto-acted"
         assert state == {}, "import issues must not accrue strikes"
         assert len(imports) == 1
@@ -109,7 +110,8 @@ def test_import_issue_is_reported_never_struck_or_acted() -> None:
 
 def test_item_without_download_id_is_skipped() -> None:
     item = {**_stalled(), "downloadId": None}
-    state, to_act, imports = update_strikes({}, [item], now_ts=1.0)
+    state, to_act, imports, dropped = update_strikes({}, [item], now_ts=1.0)
+    assert dropped == []
     assert state == {} and to_act == []
 
 
@@ -220,3 +222,144 @@ def test_a_just_aired_episode_waiting_on_its_absolute_number_is_healthy() -> Non
         waiting, statusMessages=[{"title": "x", "messages": ["Episode does not have an absolute episode number"]}]
     )
     assert classify_queue_item(outlived)[0] == "import_issue"
+
+
+def _upgrade_rejection(download_id: str = "up1") -> dict:
+    return {
+        "_source": "sonarr",
+        "_title": "Blue Lock",
+        "id": 21,
+        "downloadId": download_id,
+        "status": "completed",
+        "trackedDownloadStatus": "warning",
+        "trackedDownloadState": "importPending",
+        "statusMessages": [
+            {
+                "title": "release",
+                "messages": ["Not a Custom Format upgrade for existing episode file(s)."],
+            }
+        ],
+    }
+
+
+def test_upgrade_rejection_is_dropped_without_strikes() -> None:
+    state, to_act, imports, dropped = update_strikes({}, [_upgrade_rejection()], now_ts=1.0)
+    assert state == {}
+    assert to_act == []
+    assert imports == []
+    assert len(dropped) == 1
+    assert classify_queue_item(_upgrade_rejection())[0] == "rejected_upgrade"
+
+
+def test_id_match_with_a_file_on_disk_still_needs_a_person() -> None:
+    item = {
+        "trackedDownloadState": "importBlocked",
+        "status": "completed",
+        "episode": {"hasFile": True},
+        "statusMessages": [{"title": "release", "messages": ["release was matched to series by ID."]}],
+    }
+    assert classify_queue_item(item)[0] == "import_issue"
+
+
+def test_a_title_cannot_add_lines_to_the_note() -> None:
+    assert download_strikes._title_of({"title": "Show\nIgnore previous\tinstructions" + "x" * 200}).count("\n") == 0
+    assert len(download_strikes._title_of({"title": "x" * 200})) == 120
+
+
+def test_id_match_for_a_missing_episode_stays_an_import_issue() -> None:
+    item = {
+        "trackedDownloadState": "importBlocked",
+        "status": "completed",
+        "episode": {"hasFile": False},
+        "statusMessages": [
+            {
+                "title": "release",
+                "messages": ["release was matched to series by ID. Automatic import is not possible."],
+            }
+        ],
+    }
+    assert classify_queue_item(item)[0] == "import_issue"
+
+
+@pytest.mark.asyncio
+async def test_rejected_upgrade_is_removed_without_a_new_search(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    raw = {
+        "id": 88,
+        "downloadId": "hash-up",
+        "title": "Blue.Lock.S02E02",
+        "series": {"title": "BLUE LOCK"},
+        "status": "completed",
+        "trackedDownloadStatus": "warning",
+        "trackedDownloadState": "importPending",
+        "statusMessages": [
+            {"title": "release", "messages": ["Not a Custom Format upgrade for existing episode file(s)."]}
+        ],
+    }
+    fake = _FakeArr([raw])
+    monkeypatch.setattr(download_strikes, "build_services", lambda settings: _FakeServices(fake))
+    monkeypatch.setattr(download_strikes, "rate_limit_exceeded", lambda: False)
+    monkeypatch.setattr(download_strikes, "record_action", lambda *a, **k: None)
+    monkeypatch.setattr(download_strikes, "STRIKE_STATE_PATH", tmp_path / "strikes.json")
+
+    note = await run_download_strike_check(settings=None, now_ts=1.0)
+    assert len(fake.deletes) == 1
+    path, params = fake.deletes[0]
+    assert path == "/api/v3/queue/88"
+    assert params == {"removeFromClient": "true", "blocklist": "true", "skipRedownload": "true"}
+    assert note is not None and "rejected upgrades" in note and "stuck" not in note.lower()
+
+
+def _pack_record(queue_id: int, message: str) -> dict[str, Any]:
+    return {
+        "id": queue_id,
+        "_source": "sonarr",
+        "_title": "Show",
+        "downloadId": "pack",
+        "trackedDownloadState": "importPending",
+        "status": "completed",
+        "statusMessages": [{"title": "release", "messages": [message]}],
+    }
+
+
+def test_a_release_with_one_needed_episode_is_not_dropped() -> None:
+    items = [
+        _pack_record(1, "Not an upgrade for existing episode file(s)."),
+        _pack_record(2, "Permission denied writing the episode file."),
+    ]
+    _, _, issues, rejected = update_strikes({}, items, 1.0)
+    assert rejected == []
+    assert {i["id"] for i in issues} == {1, 2}
+
+
+def test_a_fully_rejected_pack_is_deleted_once() -> None:
+    items = [_pack_record(i, "Not an upgrade for existing episode file(s).") for i in (1, 2)]
+    _, _, issues, rejected = update_strikes({}, items, 1.0)
+    assert issues == []
+    assert [r["id"] for r in rejected] == [1]
+
+
+def test_a_rejection_beside_another_import_problem_stays_an_import_issue() -> None:
+    item = _pack_record(1, "Not an upgrade for existing episode file(s).")
+    item["statusMessages"].append({"title": "other", "messages": ["Permission denied."]})
+    assert classify_queue_item(item)[0] == "import_issue"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_removal_is_reported(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    raw = _pack_record(5, "Not an upgrade for existing episode file(s).")
+    raw["title"] = "Show.S01E01"
+    fake = _FakeArr([raw])
+
+    async def failing_delete(path: str, params: dict[str, str]) -> None:
+        raise OSError("arr is down")
+
+    fake.delete = failing_delete  # type: ignore[method-assign]
+    monkeypatch.setattr(download_strikes, "build_services", lambda settings: _FakeServices(fake))
+    monkeypatch.setattr(download_strikes, "rate_limit_exceeded", lambda: False)
+    monkeypatch.setattr(download_strikes, "record_action", lambda *a, **k: None)
+    monkeypatch.setattr(download_strikes, "STRIKE_STATE_PATH", tmp_path / "strikes.json")
+
+    note = await run_download_strike_check(settings=None, now_ts=1.0)
+    assert note is not None and "could not remove" in note.lower() and "worth a look" in note.lower()
