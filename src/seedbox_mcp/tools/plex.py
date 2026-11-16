@@ -16,7 +16,12 @@ from seedbox_mcp.tools.common import (
 def _transcode_behind(session: dict[str, Any]) -> bool:
     transcode = session.get("transcode") or {}
     speed = transcode.get("speed")
-    if session.get("state") != "playing" or transcode.get("throttled") or transcode.get("complete") or speed is None:
+    if session.get("state") not in ("playing", "buffering"):
+        return False
+    if transcode.get("throttled") or transcode.get("complete") or speed is None:
+        return False
+    # Plex reports speed 0 before it has measured a just-started transcode.
+    if float(speed) == 0 and not transcode.get("progress"):
         return False
     return float(speed) < 1.0
 
@@ -37,7 +42,7 @@ async def plex_now_playing(services: Services) -> dict[str, Any]:
         # transcodes are CPU/GPU load, remote streams are WAN-upload load.
         # Plex sets `throttled` when its transcoder is far enough ahead of
         # playback to pause, so throttled is healthy; falling behind is an
-        # unthrottled, unfinished transcode running under 1x while playing.
+        # unthrottled, unfinished transcode running under 1x while watched.
         behind = [s for s in transcoding if _transcode_behind(s)]
         flags = []
         if len(transcoding) >= 2:

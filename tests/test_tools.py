@@ -953,11 +953,11 @@ async def test_media_search_includes_directors_when_director_filter_set(services
         assert "directors" in candidate
 
 
-def _transcode_session(**transcode: object) -> dict[str, object]:
+def _transcode_session(state: str = "playing", **transcode: object) -> dict[str, object]:
     return {
         "title": "Spy Kids",
         "type": "movie",
-        "state": "playing",
+        "state": state,
         "local": False,
         "is_transcoding": True,
         "bandwidth_kbps": 3815,
@@ -986,11 +986,14 @@ async def test_plex_now_playing_throttled_transcode_is_not_a_bottleneck(settings
 async def test_plex_now_playing_flags_transcode_slower_than_real_time(settings) -> None:  # type: ignore[no-untyped-def]
     plex = _SessionsPlex(
         [
-            _transcode_session(throttled=False, speed=0.6),
-            _transcode_session(throttled=False, speed=2.4),
-            _transcode_session(throttled=False, speed=0, complete=True),
+            _transcode_session(throttled=False, speed=0.6, progress=20.0),
+            _transcode_session(state="buffering", throttled=False, speed=0.4, progress=20.0),
+            _transcode_session(throttled=False, speed=2.4, progress=20.0),
+            _transcode_session(throttled=False, speed=0, complete=True, progress=100.0),
+            _transcode_session(throttled=False, speed=0, progress=0),
+            _transcode_session(state="paused", throttled=False, speed=0, progress=20.0),
         ]
     )
     result = await plex_now_playing(Services(settings, None, None, plex))  # type: ignore[arg-type]
     flags = result["data"]["bottleneck_flags"]
-    assert "1 transcode(s) running slower than real time — viewer may see buffering" in flags
+    assert "2 transcode(s) running slower than real time — viewer may see buffering" in flags
