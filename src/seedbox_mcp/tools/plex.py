@@ -13,6 +13,14 @@ from seedbox_mcp.tools.common import (
 )
 
 
+def _transcode_behind(session: dict[str, Any]) -> bool:
+    transcode = session.get("transcode") or {}
+    speed = transcode.get("speed")
+    if session.get("state") != "playing" or transcode.get("throttled") or transcode.get("complete") or speed is None:
+        return False
+    return float(speed) < 1.0
+
+
 async def plex_now_playing(services: Services) -> dict[str, Any]:
     async def run() -> dict[str, Any]:
         # Source of truth is Plex's own /status/sessions, NOT Tautulli's
@@ -26,14 +34,16 @@ async def plex_now_playing(services: Services) -> dict[str, Any]:
         remote = [s for s in sessions if s.get("local") is False]
         total_bw = sum(s.get("bandwidth_kbps") or 0 for s in sessions)
         # Bottleneck flags computed in code, not left to model judgment:
-        # transcodes are CPU/GPU load, remote streams are WAN-upload load,
-        # a throttled transcode means the server can't keep up in realtime.
-        throttled = [s for s in transcoding if (s.get("transcode") or {}).get("throttled")]
+        # transcodes are CPU/GPU load, remote streams are WAN-upload load.
+        # Plex sets `throttled` when its transcoder is far enough ahead of
+        # playback to pause, so throttled is healthy; falling behind is an
+        # unthrottled, unfinished transcode running under 1x while playing.
+        behind = [s for s in transcoding if _transcode_behind(s)]
         flags = []
         if len(transcoding) >= 2:
             flags.append(f"{len(transcoding)} concurrent transcodes — CPU/GPU load")
-        if throttled:
-            flags.append(f"{len(throttled)} transcode(s) throttled — server may not be keeping up in real time")
+        if behind:
+            flags.append(f"{len(behind)} transcode(s) running slower than real time — viewer may see buffering")
         if remote:
             flags.append(f"{len(remote)} remote (WAN) stream(s) — upload-bandwidth load")
         if total_bw >= 100_000:

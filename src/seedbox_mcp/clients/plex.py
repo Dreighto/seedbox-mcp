@@ -115,6 +115,7 @@ class PlexClient:
                             "video_decision": transcode.get("videoDecision"),
                             "audio_decision": transcode.get("audioDecision"),
                             "throttled": transcode.get("throttled"),
+                            "complete": transcode.get("complete"),
                             "speed": transcode.get("speed"),
                             "progress": transcode.get("progress"),
                         }

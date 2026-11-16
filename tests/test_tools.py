@@ -4,7 +4,7 @@ import pytest
 
 from seedbox_mcp.runtime import Services
 from seedbox_mcp.tools.common import compact_tautulli_activity
-from seedbox_mcp.tools.plex import plex_overview
+from seedbox_mcp.tools.plex import plex_now_playing, plex_overview
 from seedbox_mcp.tools.radarr import (
     radarr_add_movie,
     radarr_delete_movie,
@@ -951,3 +951,46 @@ async def test_media_search_includes_directors_when_director_filter_set(services
     assert plex_candidates
     for candidate in plex_candidates:
         assert "directors" in candidate
+
+
+def _transcode_session(**transcode: object) -> dict[str, object]:
+    return {
+        "title": "Spy Kids",
+        "type": "movie",
+        "state": "playing",
+        "local": False,
+        "is_transcoding": True,
+        "bandwidth_kbps": 3815,
+        "transcode": {"video_decision": "transcode", "audio_decision": "transcode", **transcode},
+    }
+
+
+class _SessionsPlex:
+    def __init__(self, sessions: list[dict[str, object]]) -> None:
+        self.sessions = sessions
+
+    async def get_sessions(self) -> list[dict[str, object]]:
+        return self.sessions
+
+
+@pytest.mark.asyncio
+async def test_plex_now_playing_throttled_transcode_is_not_a_bottleneck(settings) -> None:  # type: ignore[no-untyped-def]
+    plex = _SessionsPlex([_transcode_session(throttled=True, speed=0, progress=36.4)])
+    result = await plex_now_playing(Services(settings, None, None, plex))  # type: ignore[arg-type]
+    flags = result["data"]["bottleneck_flags"]
+    assert not any("real time" in f for f in flags)
+    assert any("remote" in f for f in flags)
+
+
+@pytest.mark.asyncio
+async def test_plex_now_playing_flags_transcode_slower_than_real_time(settings) -> None:  # type: ignore[no-untyped-def]
+    plex = _SessionsPlex(
+        [
+            _transcode_session(throttled=False, speed=0.6),
+            _transcode_session(throttled=False, speed=2.4),
+            _transcode_session(throttled=False, speed=0, complete=True),
+        ]
+    )
+    result = await plex_now_playing(Services(settings, None, None, plex))  # type: ignore[arg-type]
+    flags = result["data"]["bottleneck_flags"]
+    assert "1 transcode(s) running slower than real time — viewer may see buffering" in flags

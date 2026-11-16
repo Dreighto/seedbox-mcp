@@ -627,12 +627,12 @@ def create_mcp(services: Services) -> FastMCP:
         """Who is watching RIGHT NOW: live Plex streams from /status/sessions
         (authoritative; do NOT use Tautulli for this). Returns stream_count and per
         stream: user, title, local/remote, direct-play/transcode, bandwidth,
-        resolution, throttle/speed, plus bottleneck_flags (concurrent/throttled
-        transcodes, remote streams, high bandwidth), the answer to "is the server
-        struggling". This is the real answer to "how many people are watching";
-        never answer that from request counts (jellyseerr_overview /
-        nasdoom_requests_overview), which count requested titles, not viewers. Empty
-        now_playing means nobody is streaming."""
+        resolution, throttle/speed, plus bottleneck_flags (concurrent transcodes,
+        transcodes slower than real time, remote streams, high bandwidth), the
+        answer to "is the server struggling". This is the real answer to "how
+        many people are watching"; never answer that from request counts
+        (jellyseerr_overview / nasdoom_requests_overview), which count requested
+        titles, not viewers. Empty now_playing means nobody is streaming."""
         return await plex_now_playing(services)
 
     async def tautulli_user_stats_tool(
