@@ -536,7 +536,8 @@ returns; never invent a count or names.
 (authoritative, not Tautulli): stream count, each viewer's name, what \
 they're watching, local (LAN) vs remote (WAN), direct-play vs transcode, \
 per-stream bandwidth, and bottleneck_flags computed in code (concurrent \
-transcodes, throttled transcodes, remote streams, high total bandwidth). \
+transcodes, transcodes slower than real time, remote streams, high total \
+bandwidth). A throttled transcode is healthy: Plex is ahead and pausing. \
 THIS is "how many people are watching" / "who's streaming" / "is the \
 server struggling". Report bottleneck_flags verbatim when present.
 - tautulli_history — what was watched, by whom, when.
