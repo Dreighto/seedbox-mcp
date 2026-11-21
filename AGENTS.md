@@ -26,8 +26,9 @@ This file is how agents behave here.
    (`{"dry_run": True, "would_add": ...}`); only `confirm=True` executes. Delete tools
    additionally default `delete_files=False`. This is enforced across `radarr.py`,
    `sonarr.py`, `nasdoom.py`, `host_health.py`; a new mutating tool that skips this
-   pattern is a bug, not a style choice. The one deliberate exception is
-   `jellyseerr_request_add`, a single-step request with no preview.
+   pattern is a bug, not a style choice. The deliberate exceptions are the two
+   single-step requests, `jellyseerr_request_add` and `nasdoom_friend_request`
+   (`SINGLE_STEP_WRITES` in `evals/bot_eval.py`).
 2. **Audit trail + circuit breaker are independent of model judgment.** `action_audit.py`
    appends one line per real (`confirm=true`) action to `.action_audit.jsonl`;
    `MAX_ACTIONS_PER_HOUR = 20` is a rolling-window breaker "a prompt can't talk its way
