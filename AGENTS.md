@@ -6,9 +6,9 @@ This file is how agents behave here.
 
 ## Running and changing it
 
-- Runs on room as systemd services (`seedbox-*`) straight from the `~/dev/seedbox-mcp`
-  checkout, so merging to `main` and pulling there is the deploy; restart the changed
-  services with `sudo systemctl restart seedbox-<name>`.
+- Runs on room as system services straight from the `~/dev/seedbox-mcp` checkout
+  (`seedbox-mcp` and the `seedbox-telegram-*` bots), so merging to `main` and pulling
+  there is the deploy; restart the changed services with `sudo systemctl restart seedbox-<name>`.
 - Each Telegram bot is hard-allowlisted by `chat_id`: an unlisted chat is silently
   dropped. Add the chat_id explicitly; don't assume the bot replies to anyone who finds it.
 - Before adding a tool or an integration, read the three layers in `docs/architecture.md`.
@@ -25,15 +25,16 @@ This file is how agents behave here.
 1. **Every mutating tool defaults to dry-run.** `confirm: bool = False` previews
    (`{"dry_run": True, "would_add": ...}`); only `confirm=True` executes. Delete tools
    additionally default `delete_files=False`. This is enforced across `radarr.py`,
-   `sonarr.py`, `jellyseerr.py`, `nasdoom.py`, `host_health.py`; a new mutating tool that
-   skips this pattern is a bug, not a style choice.
+   `sonarr.py`, `nasdoom.py`, `host_health.py`; a new mutating tool that skips this
+   pattern is a bug, not a style choice. The one deliberate exception is
+   `jellyseerr_request_add`, a single-step request with no preview.
 2. **Audit trail + circuit breaker are independent of model judgment.** `action_audit.py`
    appends one line per real (`confirm=true`) action to `.action_audit.jsonl`;
    `MAX_ACTIONS_PER_HOUR = 20` is a rolling-window breaker "a prompt can't talk its way
    around." Don't build a path that writes an action without going through this.
 3. **Autonomous promotion is data-gated, not agent-judgment-gated.** `graduation.py` only
    _recommends_ a tool for the monitor's unattended set after real thresholds
-   (`GRADUATION_MIN_SUCCESSES = 5`, `MIN_DISTINCT = 2`, 30-day recency); a human flips the
+   (`GRADUATION_MIN_SUCCESSES = 5`, `GRADUATION_MIN_DISTINCT = 2`, 30-day recency); a human flips the
    switch. Don't hand-wire a tool into the autonomous set to skip this.
 4. **Errors are `MediaMcpError`** (`errors.py`), `error_type` a closed `Literal`
    (`not_found`/`ambiguous`/`upstream_unreachable`/`upstream_auth`/`validation`/
@@ -69,7 +70,7 @@ This file is how agents behave here.
 - **Test `Settings` fixtures must set `_env_file=None`**, or "default value" tests silently
   read the deployed `.env` instead of actual defaults (bit this repo once already, commit
   `b46a663`).
-- **Bot tool-name uniqueness is enforced across "sections"**: a new `ACTION_TOOL` with a name
+- **Bot tool-name uniqueness is enforced across "sections"**: a new `ACTION_TOOLS` entry with a name
   that collides with another section's tool hard-fails. Check name uniqueness across bot
   sections before adding a tool, not just within the one you're editing.
 - **The eval harness (`evals/bot_eval.py`) is a real sandbox, not a formality**: it drives
