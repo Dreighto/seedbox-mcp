@@ -6,9 +6,13 @@ This file is how agents behave here.
 
 ## Running and changing it
 
-- Runs on room as system services straight from the `~/dev/seedbox-mcp` checkout
-  (`seedbox-mcp` and the `seedbox-telegram-*` bots), so merging to `main` and pulling
-  there is the deploy; restart the changed services with `sudo systemctl restart seedbox-<name>`.
+- Runs on room as a system service straight from the `~/dev/seedbox-mcp` checkout, so
+  merging to `main` and pulling there is the deploy. Only `seedbox-mcp` runs: restart it by
+  name with `sudo systemctl restart seedbox-mcp`, never with a `seedbox-*` pattern or a list.
+- The two Telegram bots (`seedbox-telegram-bot`, `seedbox-telegram-friend-bot`) are switched
+  off, and the keys they need live in room's credentials broker, not in `.env`. Started as
+  they are, they exit at once and give up after three tries. To run one again, first give its
+  unit a `credbroker.conf` drop-in like `seedbox-mcp`'s and delete its `give-up.conf`.
 - Each Telegram bot is hard-allowlisted by `chat_id`: an unlisted chat is silently
   dropped. Add the chat_id explicitly; don't assume the bot replies to anyone who finds it.
 - Before adding a tool or an integration, read the three layers in `docs/architecture.md`.
